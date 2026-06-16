@@ -1,7 +1,10 @@
+from pydantic import BaseModel, EmailStr
 
-from pydantic import BaseModel
+
+class SendOTPRequest(BaseModel):
+    email: EmailStr
 
 
 class VerifyOTPRequest(BaseModel):
-    email: str
+    email: EmailStr
     otp: str
