@@ -3,10 +3,7 @@ from sqlalchemy.orm import Session
 from app.db.models import User
 
 
-def get_user_by_email(
-    db: Session,
-    email: str
-):
+def get_user_by_email(db: Session,email: str):
     return (
         db.query(User)
         .filter(User.email == email)
@@ -14,10 +11,7 @@ def get_user_by_email(
     )
 
 
-def create_user(
-    db: Session,
-    email: str
-):
+def create_user(db: Session,email: str):
     user = User(
         email=email,
         is_verified=True
