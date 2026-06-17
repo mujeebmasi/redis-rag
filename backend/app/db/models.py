@@ -16,7 +16,7 @@ class User(Base):
         nullable = False
     )
     
-    isVerified = Column(
+    is_verified = Column(
         Boolean,
         default = True
     )

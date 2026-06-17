@@ -1,11 +1,18 @@
 from fastapi import APIRouter
 from app.services.email_service import send_otp_email
+from app.db.dependencies import get_db
+from app.services.otp_service import generate_otp
+from app.core.redis_client import redis_client
+from fastapi import Depends
+from sqlalchemy.orm import Session
+from app.db.crud import (
+    get_user_by_email,
+    create_user
+)
 from app.schemas.auth import (
     SendOTPRequest,
     VerifyOTPRequest
 )
-from app.services.otp_service import generate_otp
-from app.core.redis_client import redis_client
 
 router = APIRouter(
     prefix="/auth",
@@ -35,15 +42,13 @@ def send_otp(data: SendOTPRequest):
 
 
 @router.post("/verify-otp")
-def verify_otp(data: VerifyOTPRequest):
+def verify_otp(data: VerifyOTPRequest,
+               db: Session = Depends(get_db)):
 
     stored_otp = redis_client.get(
         f"otp:{data.email}"
     )
   
-
-    print("User OTP:", data.otp)
-    print("Stored OTP:", stored_otp)
 
     if stored_otp is None:
         return {
@@ -56,7 +61,16 @@ def verify_otp(data: VerifyOTPRequest):
             "verified": False,
             "message": "Invalid OTP"
         }
+    existing_user = get_user_by_email(
+            db,
+            data.email
+            )
 
+    if not existing_user:
+        create_user(
+            db,
+            data.email
+        )
     redis_client.delete(
         f"otp:{data.email}"
     )
