@@ -14,7 +14,6 @@ router = APIRouter(
 
 
 @router.post("/send-otp")
-@router.post("/send-otp")
 def send_otp(data: SendOTPRequest):
 
     otp = generate_otp()
