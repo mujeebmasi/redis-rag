@@ -5,6 +5,7 @@ from app.services.otp_service import generate_otp
 from app.core.redis_client import redis_client
 from fastapi import Depends
 from sqlalchemy.orm import Session
+from app.services.jwt_service import create_access_token
 from app.db.crud import (
     get_user_by_email,
     create_user
@@ -74,8 +75,11 @@ def verify_otp(data: VerifyOTPRequest,
     redis_client.delete(
         f"otp:{data.email}"
     )
-
+    token = create_access_token(
+    data.email
+    )
     return {
-        "verified": True,
-        "message": "OTP verified successfully"
-    }
+    "verified": True,
+    "message": "OTP verified successfully",
+    "access_token": token
+}
