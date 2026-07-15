@@ -1,6 +1,49 @@
+# ============================================================
+# RedisRAG - Docker Compose
+# ============================================================
+# Starts all required services with a single command:
+#   docker compose up -d
+#
+# Services:
+#   - Redis Stack: Redis + RediSearch (vector search) + RedisJSON
+#   - PostgreSQL: User database
+# ============================================================
+
 services:
+
+  # ── Redis Stack ────────────────────────────────────────────
+  # Using redis-stack instead of plain redis because we need:
+  # - RediSearch module: for vector similarity search
+  # - RedisJSON module: for storing JSON documents
+  #
+  # Redis Stack = Redis + these modules pre-installed
   redis:
-    image: redis:alpine
-    container_name: redis-server
+    image: redis/redis-stack:latest
+    container_name: redis-rag-redis
     ports:
-      - "6379:6379"
+      - "6379:6379"     # Redis protocol
+      - "8001:8001"     # RedisInsight web UI (optional, nice for debugging)
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  # ── PostgreSQL ─────────────────────────────────────────────
+  # Stores user accounts (email, verification status)
+  postgres:
+    image: postgres:16-alpine
+    container_name: redis-rag-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: admin123
+      POSTGRES_DB: redisrag
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+# ── Volumes ──────────────────────────────────────────────────
+# Named volumes persist data across container restarts
+volumes:
+  redis_data:
+  postgres_data:
