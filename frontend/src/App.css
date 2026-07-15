@@ -330,7 +330,12 @@
 .chat-container {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  max-height: 100%;
+  aspect-ratio: 1 / 1;
+  align-self: center;
 }
 
 .chat-messages {
@@ -377,6 +382,67 @@
   border: 1px solid rgba(255, 255, 255, 0.06);
   color: rgba(255, 255, 255, 0.9);
   border-bottom-left-radius: 4px;
+}
+
+/* Styling for Markdown elements in AI messages */
+.ai .message-content p {
+  margin-bottom: 0.75rem;
+}
+.ai .message-content p:last-child {
+  margin-bottom: 0;
+}
+.ai .message-content h1, 
+.ai .message-content h2, 
+.ai .message-content h3, 
+.ai .message-content h4 {
+  color: white;
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+  font-weight: 700;
+}
+.ai .message-content h1 { font-size: 1.3rem; }
+.ai .message-content h2 { font-size: 1.2rem; }
+.ai .message-content h3 { font-size: 1.1rem; }
+.ai .message-content h4 { font-size: 1rem; }
+
+.ai .message-content ul, 
+.ai .message-content ol {
+  margin-left: 1.25rem;
+  margin-bottom: 0.75rem;
+}
+.ai .message-content li {
+  margin-bottom: 0.25rem;
+}
+
+.ai .message-content code {
+  background: rgba(255, 255, 255, 0.08);
+  padding: 0.2rem 0.4rem;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 0.85em;
+  color: #06b6d4; /* teal/cyan color */
+}
+
+.ai .message-content pre {
+  background: rgba(0, 0, 0, 0.3);
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin-bottom: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.ai .message-content pre code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  color: #e2e8f0;
+  font-size: 0.9rem;
+}
+
+.ai .message-content strong {
+  color: white;
+  font-weight: 600;
 }
 
 .chat-citations {

@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { api } from '../services/api';
 import { Send, Loader, User, Bot, ExternalLink } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
 
 interface Message {
   id: string;
@@ -30,15 +31,19 @@ export const ChatConsole: React.FC<ChatConsoleProps> = ({ username, indexingStat
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatMessagesRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom of messages
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (chatMessagesRef.current) {
+      chatMessagesRef.current.scrollTop = chatMessagesRef.current.scrollHeight;
+    }
   };
 
   useEffect(() => {
     scrollToBottom();
+    const timer = setTimeout(scrollToBottom, 50);
+    return () => clearTimeout(timer);
   }, [messages, loading]);
 
   const handleSendMessage = async (textToSend: string) => {
@@ -95,7 +100,7 @@ export const ChatConsole: React.FC<ChatConsoleProps> = ({ username, indexingStat
       </div>
 
       {/* Messages */}
-      <div className="chat-messages">
+      <div className="chat-messages" ref={chatMessagesRef}>
         {messages.map((msg) => (
           <div key={msg.id} className={`message-bubble ${msg.sender}`}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', alignSelf: msg.sender === 'user' ? 'flex-end' : 'flex-start', fontSize: '0.75rem', color: 'rgba(255,255,255,0.4)' }}>
@@ -110,11 +115,15 @@ export const ChatConsole: React.FC<ChatConsoleProps> = ({ username, indexingStat
               )}
             </div>
             <div className="message-content">
-              {msg.text.split('\n').map((line, idx) => (
-                <p key={idx} style={{ marginBottom: line === '' ? '0.75rem' : '0.25rem' }}>
-                  {line}
-                </p>
-              ))}
+              {msg.sender === 'user' ? (
+                msg.text.split('\n').map((line, idx) => (
+                  <p key={idx} style={{ marginBottom: line === '' ? '0.75rem' : '0.25rem' }}>
+                    {line}
+                  </p>
+                ))
+              ) : (
+                <ReactMarkdown>{msg.text}</ReactMarkdown>
+              )}
               
               {/* Citations */}
               {msg.sources && msg.sources.length > 0 && (
@@ -147,7 +156,6 @@ export const ChatConsole: React.FC<ChatConsoleProps> = ({ username, indexingStat
             </div>
           </div>
         )}
-        <div ref={messagesEndRef} />
       </div>
 
       {/* Suggestion Prompts */}
