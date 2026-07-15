@@ -16,6 +16,7 @@ Rate Limits:
 - Set GITHUB_TOKEN in .env for higher limits
 """
 
+import asyncio
 import base64
 import httpx
 from app.core.config import settings
@@ -41,7 +42,7 @@ def _get_headers() -> dict:
     return headers
 
 
-def fetch_user_profile(username: str) -> dict:
+async def fetch_user_profile(client: httpx.AsyncClient, username: str) -> dict:
     """
     Fetch a GitHub user's profile information.
     
@@ -53,15 +54,12 @@ def fetch_user_profile(username: str) -> dict:
     Raises:
         httpx.HTTPStatusError: If user not found (404) or API error
     """
-    response = httpx.get(
-        f"{GITHUB_API}/users/{username}",
-        headers=_get_headers(),
-    )
+    response = await client.get(f"{GITHUB_API}/users/{username}")
     response.raise_for_status()
     return response.json()
 
 
-def fetch_repositories(username: str, max_repos: int = 30) -> list[dict]:
+async def fetch_repositories(client: httpx.AsyncClient, username: str, max_repos: int = 30) -> list[dict]:
     """
     Fetch a user's public repositories, sorted by most recently updated.
     
@@ -75,9 +73,8 @@ def fetch_repositories(username: str, max_repos: int = 30) -> list[dict]:
         List of repository dicts with: name, description, language,
         stargazers_count, forks_count, html_url, etc.
     """
-    response = httpx.get(
+    response = await client.get(
         f"{GITHUB_API}/users/{username}/repos",
-        headers=_get_headers(),
         params={
             "sort": "updated",
             "direction": "desc",
@@ -88,7 +85,7 @@ def fetch_repositories(username: str, max_repos: int = 30) -> list[dict]:
     return response.json()
 
 
-def fetch_readme(owner: str, repo: str) -> str | None:
+async def fetch_readme(client: httpx.AsyncClient, owner: str, repo: str) -> str | None:
     """
     Fetch and decode the README file for a repository.
     
@@ -102,10 +99,7 @@ def fetch_readme(owner: str, repo: str) -> str | None:
         None: If no README exists (404)
     """
     try:
-        response = httpx.get(
-            f"{GITHUB_API}/repos/{owner}/{repo}/readme",
-            headers=_get_headers(),
-        )
+        response = await client.get(f"{GITHUB_API}/repos/{owner}/{repo}/readme")
         response.raise_for_status()
 
         data = response.json()
@@ -121,14 +115,14 @@ def fetch_readme(owner: str, repo: str) -> str | None:
         raise e
 
 
-def analyze_profile(username: str) -> dict:
+async def analyze_profile(username: str) -> dict:
     """
     Full profile analysis — orchestrates all the above functions.
     
     Steps:
     1. Fetch user profile
     2. Fetch all public repositories
-    3. Fetch README for each repository
+    3. Fetch README for each repository concurrently
     4. Package everything into a structured result
     
     Returns:
@@ -149,36 +143,39 @@ def analyze_profile(username: str) -> dict:
         }
     """
 
-    # Step 1: Get user profile
-    profile = fetch_user_profile(username)
+    async with httpx.AsyncClient(headers=_get_headers()) as client:
+        # Step 1: Get user profile
+        profile = await fetch_user_profile(client, username)
 
-    # Step 2: Get repositories
-    raw_repos = fetch_repositories(username)
+        # Step 2: Get repositories
+        raw_repos = await fetch_repositories(client, username)
 
-    # Step 3: Fetch README for each repo and build structured data
-    repositories = []
-    for repo in raw_repos:
-        readme_content = fetch_readme(username, repo["name"])
+        # Step 3: Fetch README for each repo concurrently
+        tasks = [fetch_readme(client, username, repo["name"]) for repo in raw_repos]
+        readmes = await asyncio.gather(*tasks)
 
-        repositories.append({
-            "name": repo["name"],
-            "description": repo.get("description"),
-            "language": repo.get("language"),
-            "stars": repo.get("stargazers_count", 0),
-            "forks": repo.get("forks_count", 0),
-            "url": repo.get("html_url", ""),
-            "readme": readme_content,
-        })
+        # Step 4: Build structured data
+        repositories = []
+        for repo, readme_content in zip(raw_repos, readmes):
+            repositories.append({
+                "name": repo["name"],
+                "description": repo.get("description"),
+                "language": repo.get("language"),
+                "stars": repo.get("stargazers_count", 0),
+                "forks": repo.get("forks_count", 0),
+                "url": repo.get("html_url", ""),
+                "readme": readme_content,
+            })
 
-    return {
-        "profile": {
-            "username": profile.get("login"),
-            "name": profile.get("name"),
-            "bio": profile.get("bio"),
-            "avatar_url": profile.get("avatar_url"),
-            "public_repos": profile.get("public_repos", 0),
-            "followers": profile.get("followers", 0),
-            "following": profile.get("following", 0),
-        },
-        "repositories": repositories,
-    }
+        return {
+            "profile": {
+                "username": profile.get("login"),
+                "name": profile.get("name"),
+                "bio": profile.get("bio"),
+                "avatar_url": profile.get("avatar_url"),
+                "public_repos": profile.get("public_repos", 0),
+                "followers": profile.get("followers", 0),
+                "following": profile.get("following", 0),
+            },
+            "repositories": repositories,
+        }

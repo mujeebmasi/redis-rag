@@ -35,3 +35,18 @@ class GitHubProfileResponse(BaseModel):
     repositories: list[RepositoryInfo] = []
     total_readmes_indexed: int = 0
     message: str = "Profile analyzed successfully"
+
+
+class GitHubAnalyzeResponse(BaseModel):
+    """Response returned immediately when analysis is queued."""
+    username: str
+    status: str
+    message: str
+
+
+class GitHubStatusResponse(BaseModel):
+    """Status of the GitHub profile indexing task."""
+    username: str
+    status: str  # "not_started", "processing", "completed", "failed"
+    error: str | None = None
+    profile: GitHubProfileResponse | None = None

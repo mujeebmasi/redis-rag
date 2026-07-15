@@ -19,6 +19,7 @@ Flow:
 This is the key pattern that makes AI applications reliable and useful.
 """
 
+import asyncio
 import logging
 
 from langchain_groq import ChatGroq
@@ -122,7 +123,7 @@ def ask(username: str, question: str) -> dict:
     # 3. Retry the semantic search once
     if not retrieved_docs:
         try:
-            profile_data = analyze_profile(username)
+            profile_data = asyncio.run(analyze_profile(username))
             repos = profile_data.get("repositories", [])
 
             stored = embed_and_store(username=username, repositories=repos)
