@@ -86,22 +86,22 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '2rem', marginTop: '3rem' }}>
           <div className="glass-card" style={{ padding: '2rem' }}>
             <div style={{ fontSize: '2.5rem', fontWeight: 800, color: 'var(--primary)', marginBottom: '1rem' }}>01</div>
-            <h4 style={{ fontWeight: 700, marginBottom: '0.5rem', color: 'white' }}>Retrieve</h4>
-            <p style={{ fontSize: '0.875rem', color: 'rgba(255,255,255,0.5)', lineHeight: 1.5 }}>
+            <h4 style={{ fontWeight: 700, marginBottom: '0.5rem', color: 'var(--text-title)' }}>Retrieve</h4>
+            <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
               Query converted to embedding. Redis pulls the most similar README chunks in microseconds.
             </p>
           </div>
           <div className="glass-card" style={{ padding: '2rem' }}>
             <div style={{ fontSize: '2.5rem', fontWeight: 800, color: 'var(--secondary)', marginBottom: '1rem' }}>02</div>
-            <h4 style={{ fontWeight: 700, marginBottom: '0.5rem', color: 'white' }}>Augment</h4>
-            <p style={{ fontSize: '0.875rem', color: 'rgba(255,255,255,0.5)', lineHeight: 1.5 }}>
+            <h4 style={{ fontWeight: 700, marginBottom: '0.5rem', color: 'var(--text-title)' }}>Augment</h4>
+            <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
               Insert retrieved README content directly into the model's system prompt instructions.
             </p>
           </div>
           <div className="glass-card" style={{ padding: '2rem' }}>
-            <div style={{ fontSize: '2.5rem', fontWeight: 800, color: 'white', marginBottom: '1rem' }}>03</div>
-            <h4 style={{ fontWeight: 700, marginBottom: '0.5rem', color: 'white' }}>Generate</h4>
-            <p style={{ fontSize: '0.875rem', color: 'rgba(255,255,255,0.5)', lineHeight: 1.5 }}>
+            <div style={{ fontSize: '2.5rem', fontWeight: 800, color: 'var(--primary)', marginBottom: '1rem' }}>03</div>
+            <h4 style={{ fontWeight: 700, marginBottom: '0.5rem', color: 'var(--text-title)' }}>Generate</h4>
+            <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
               Google Gemini processes the prompt to generate grounded, fact-checked portfolios insights.
             </p>
           </div>
@@ -109,7 +109,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
       </section>
       
       {/* Footer */}
-      <footer style={{ borderTop: '1px solid var(--border-color)', padding: '2rem', textAlign: 'center', fontSize: '0.875rem', color: 'rgba(255,255,255,0.3)', marginTop: '4rem' }}>
+      <footer style={{ borderTop: '1px solid var(--border-color)', padding: '2rem', textAlign: 'center', fontSize: '0.875rem', color: 'var(--text-muted)', marginTop: '4rem' }}>
         &copy; {new Date().getFullYear()} RedisRAG. Built with FastAPI, React, TypeScript & Redis.
       </footer>
     </div>

@@ -91,9 +91,9 @@ export const ChatConsole: React.FC<ChatConsoleProps> = ({ username, indexingStat
     <div className="chat-container glass-panel animate-fade-in">
       <div style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
         <Bot size={20} className="glow-text-cyan" style={{ color: 'var(--secondary)' }} />
-        <h3 style={{ fontSize: '1.15rem', fontWeight: 700, color: 'white' }}>AI Technical Assistant</h3>
+        <h3 style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--text-title)' }}>AI Technical Assistant</h3>
         {username && (
-          <span style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.4)', marginLeft: 'auto' }}>
+          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted-dim)', marginLeft: 'auto' }}>
             Context: <strong style={{ color: 'var(--secondary)' }}>@{username}</strong>
           </span>
         )}
@@ -103,7 +103,7 @@ export const ChatConsole: React.FC<ChatConsoleProps> = ({ username, indexingStat
       <div className="chat-messages" ref={chatMessagesRef}>
         {messages.map((msg) => (
           <div key={msg.id} className={`message-bubble ${msg.sender}`}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', alignSelf: msg.sender === 'user' ? 'flex-end' : 'flex-start', fontSize: '0.75rem', color: 'rgba(255,255,255,0.4)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', alignSelf: msg.sender === 'user' ? 'flex-end' : 'flex-start', fontSize: '0.75rem', color: 'var(--text-muted-dim)' }}>
               {msg.sender === 'user' ? (
                 <>
                   You <User size={12} />
@@ -128,7 +128,7 @@ export const ChatConsole: React.FC<ChatConsoleProps> = ({ username, indexingStat
               {/* Citations */}
               {msg.sources && msg.sources.length > 0 && (
                 <div className="chat-citations">
-                  <span style={{ color: 'rgba(255,255,255,0.4)', marginRight: '0.25rem' }}>Sources:</span>
+                  <span style={{ color: 'var(--text-muted-dim)', marginRight: '0.25rem' }}>Sources:</span>
                   {msg.sources.map((src) => (
                     <a
                       key={src}
@@ -147,7 +147,7 @@ export const ChatConsole: React.FC<ChatConsoleProps> = ({ username, indexingStat
         ))}
         {loading && (
           <div className="message-bubble ai">
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.75rem', color: 'rgba(255,255,255,0.4)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.75rem', color: 'var(--text-muted-dim)' }}>
               <Bot size={12} style={{ color: 'var(--secondary)' }} /> AI assistant
             </div>
             <div className="message-content" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>

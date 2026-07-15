@@ -82,7 +82,7 @@ export const DashboardWorkspace: React.FC<DashboardWorkspaceProps> = ({ userEmai
           <span>Redis<span className="glow-text-purple">RAG</span></span>
         </div>
         <div className="workspace-user">
-          <span style={{ fontSize: '0.9rem', color: 'rgba(255,255,255,0.6)' }}>{userEmail}</span>
+          <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>{userEmail}</span>
           <button onClick={onLogout} className="btn-secondary">Logout</button>
         </div>
       </header>
@@ -94,14 +94,14 @@ export const DashboardWorkspace: React.FC<DashboardWorkspaceProps> = ({ userEmai
           <div className="panel-content">
             {/* Input Form */}
             <div className="ingest-card glass-panel" style={{ marginBottom: '1.5rem' }}>
-              <h3 style={{ fontSize: '1.25rem', fontWeight: 800, color: 'white', marginBottom: '0.75rem' }}>Analyze GitHub Profile</h3>
-              <p style={{ fontSize: '0.9rem', color: 'rgba(255,255,255,0.5)', marginBottom: '1.5rem' }}>
+              <h3 style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--text-title)', marginBottom: '0.75rem' }}>Analyze GitHub Profile</h3>
+              <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginBottom: '1.5rem' }}>
                 Fetch public repositories, split README content, generate vector embeddings, and save to Redis vector store.
               </p>
               
               <form onSubmit={handleStartAnalysis} style={{ display: 'flex', gap: '0.75rem' }}>
                 <div style={{ position: 'relative', flex: 1 }}>
-                  <Search size={18} style={{ position: 'absolute', left: '1rem', top: '50%', transform: 'translateY(-50%)', color: 'rgba(255,255,255,0.4)' }} />
+                  <Search size={18} style={{ position: 'absolute', left: '1rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted-dim)' }} />
                   <input
                     type="text"
                     className="input-field"
@@ -130,7 +130,7 @@ export const DashboardWorkspace: React.FC<DashboardWorkspaceProps> = ({ userEmai
                     {indexingStatus === 'processing' && <RefreshCw size={12} className="animate-spin" />}
                     {indexingStatus}
                   </span>
-                  <div style={{ flex: 1, fontSize: '0.85rem', color: 'rgba(255,255,255,0.6)' }}>
+                  <div style={{ flex: 1, fontSize: '0.85rem', color: 'var(--text-muted)' }}>
                     {indexingStatus === 'processing' && 'Scraping repositories and inserting vector chunks into Redis Stack...'}
                     {indexingStatus === 'completed' && `${profile?.repositories.length || 0} repositories scanned. RAG model initialized.`}
                     {indexingStatus === 'failed' && (error || 'Something went wrong.')}
@@ -147,7 +147,7 @@ export const DashboardWorkspace: React.FC<DashboardWorkspaceProps> = ({ userEmai
                   {profile.avatar_url ? (
                     <img src={profile.avatar_url} alt={profile.name || activeUsername || ''} className="profile-avatar" />
                   ) : (
-                    <div className="profile-avatar" style={{ background: 'rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <div className="profile-avatar" style={{ background: 'var(--bg-light-badge)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-title)' }}>
                       {activeUsername?.charAt(0).toUpperCase()}
                     </div>
                   )}
@@ -174,9 +174,9 @@ export const DashboardWorkspace: React.FC<DashboardWorkspaceProps> = ({ userEmai
                 </div>
 
                 {/* Repositories */}
-                <h3 style={{ fontSize: '1.15rem', fontWeight: 800, color: 'white', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <h3 style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--text-title)', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <span>Scanned Repositories</span>
-                  <span style={{ fontSize: '0.8rem', padding: '0.1rem 0.5rem', background: 'rgba(255,255,255,0.05)', borderRadius: '10px', color: 'rgba(255,255,255,0.5)' }}>
+                  <span style={{ fontSize: '0.8rem', padding: '0.1rem 0.5rem', background: 'var(--bg-light-badge)', borderRadius: '10px', color: 'var(--text-muted)' }}>
                     {profile.repositories.length}
                   </span>
                 </h3>
@@ -198,7 +198,7 @@ export const DashboardWorkspace: React.FC<DashboardWorkspaceProps> = ({ userEmai
                       {repo.description && <p className="repo-desc">{repo.description}</p>}
                       
                       <div className="repo-footer">
-                        {repo.language && <span style={{ color: 'white', fontWeight: 500 }}>{repo.language}</span>}
+                        {repo.language && <span style={{ color: 'var(--text-title)', fontWeight: 500 }}>{repo.language}</span>}
                         <span className="repo-stat"><Star size={12} /> {repo.stars}</span>
                         <span className="repo-stat"><GitFork size={12} /> {repo.forks}</span>
                       </div>
@@ -210,7 +210,7 @@ export const DashboardWorkspace: React.FC<DashboardWorkspaceProps> = ({ userEmai
 
             {/* Initial empty workspace helper */}
             {indexingStatus === 'not_started' && !loading && (
-              <div style={{ textAlign: 'center', padding: '4rem 2rem', color: 'rgba(255,255,255,0.3)' }}>
+              <div style={{ textAlign: 'center', padding: '4rem 2rem', color: 'var(--text-muted-dim)' }}>
                 <AlertCircle size={32} style={{ margin: '0 auto 1rem auto', opacity: 0.5 }} />
                 <p>Start by entering a GitHub username above to build your vector search index context.</p>
               </div>

@@ -73,8 +73,8 @@ export const AuthCard: React.FC<AuthCardProps> = ({ onBack, onSuccess }) => {
               <div className="feature-icon" style={{ margin: '0 auto 1rem auto', background: 'rgba(168, 85, 247, 0.1)', borderColor: 'rgba(168, 85, 247, 0.2)', color: 'var(--primary)' }}>
                 <Mail size={24} />
               </div>
-              <h2 style={{ fontSize: '1.8rem', fontWeight: 800, color: 'white', marginBottom: '0.5rem' }}>Welcome Back</h2>
-              <p style={{ fontSize: '0.9rem', color: 'rgba(255,255,255,0.5)' }}>Enter your email to receive a passwordless OTP verification code.</p>
+              <h2 style={{ fontSize: '1.8rem', fontWeight: 800, color: 'var(--text-title)', marginBottom: '0.5rem' }}>Welcome Back</h2>
+              <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Enter your email to receive a passwordless OTP verification code.</p>
             </div>
 
             <div className="input-group">
@@ -102,8 +102,8 @@ export const AuthCard: React.FC<AuthCardProps> = ({ onBack, onSuccess }) => {
               <div className="feature-icon" style={{ margin: '0 auto 1rem auto' }}>
                 <KeyRound size={24} />
               </div>
-              <h2 style={{ fontSize: '1.8rem', fontWeight: 800, color: 'white', marginBottom: '0.5rem' }}>Enter OTP</h2>
-              <p style={{ fontSize: '0.9rem', color: 'rgba(255,255,255,0.5)' }}>We've sent a 6-digit code to <strong style={{ color: 'white' }}>{email}</strong>.</p>
+              <h2 style={{ fontSize: '1.8rem', fontWeight: 800, color: 'var(--text-title)', marginBottom: '0.5rem' }}>Enter OTP</h2>
+              <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>We've sent a 6-digit code to <strong style={{ color: 'var(--text-title)' }}>{email}</strong>.</p>
             </div>
 
             {message && <div style={{ color: 'var(--success)', fontSize: '0.9rem', marginBottom: '1rem', textAlign: 'left' }}>{message}</div>}
@@ -129,7 +129,7 @@ export const AuthCard: React.FC<AuthCardProps> = ({ onBack, onSuccess }) => {
               {loading ? <Loader className="animate-spin" size={20} /> : 'Verify & Continue'}
             </button>
             
-            <p style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.4)', marginTop: '1.5rem' }}>
+            <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '1.5rem' }}>
               Didn't receive the code?{' '}
               <button 
                 type="button" 

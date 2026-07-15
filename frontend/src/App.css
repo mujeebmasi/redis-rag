@@ -45,14 +45,14 @@
   border: none;
   border-radius: 50px;
   cursor: pointer;
-  box-shadow: 0 4px 20px rgba(168, 85, 247, 0.4);
+  box-shadow: 0 4px 20px rgba(234, 88, 12, 0.4);
   transition: all 0.3s ease;
   text-decoration: none;
 }
 
 .btn-glowing:hover {
   transform: translateY(-2px);
-  box-shadow: 0 6px 28px rgba(6, 182, 212, 0.6);
+  box-shadow: 0 6px 28px rgba(239, 68, 68, 0.6);
 }
 
 .btn-glowing:active {
@@ -127,16 +127,16 @@
   font-size: 0.875rem;
   font-weight: 500;
   margin-bottom: 0.5rem;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--text-muted);
 }
 
 .input-field {
   width: 100%;
   padding: 0.875rem 1.25rem;
   font-size: 1rem;
-  color: white;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-title);
+  background: var(--bg-light-badge);
+  border: 1px solid var(--border-color);
   border-radius: 10px;
   outline: none;
   font-family: inherit;
@@ -144,9 +144,9 @@
 }
 
 .input-field:focus {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(0, 0, 0, 0.02);
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.15);
+  box-shadow: 0 0 0 3px var(--primary-glow);
 }
 
 /* Workspace Dashboard */
@@ -156,7 +156,7 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: rgba(3, 0, 20, 0.6);
+  background: rgba(255, 255, 255, 0.85);
   backdrop-filter: blur(12px);
   position: sticky;
   top: 0;
@@ -290,7 +290,7 @@
 .repo-name {
   font-size: 1.15rem;
   font-weight: 700;
-  color: white;
+  color: var(--text-title);
   text-decoration: none;
 }
 
@@ -300,7 +300,7 @@
 
 .repo-desc {
   font-size: 0.9rem;
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--text-muted);
   line-height: 1.5;
 }
 
@@ -308,7 +308,7 @@
   display: flex;
   gap: 1.25rem;
   font-size: 0.8rem;
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--text-dim);
 }
 
 .repo-stat {
@@ -371,16 +371,16 @@
 }
 
 .user .message-content {
-  background: linear-gradient(135deg, var(--primary) 0%, rgba(168, 85, 247, 0.6) 100%);
+  background: linear-gradient(135deg, var(--primary) 0%, rgba(244, 63, 94, 0.6) 100%);
   color: white;
   border-bottom-right-radius: 4px;
-  box-shadow: 0 4px 12px rgba(168, 85, 247, 0.2);
+  box-shadow: 0 4px 12px rgba(255, 90, 54, 0.2);
 }
 
 .ai .message-content {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.9);
+  background: var(--bg-light-badge);
+  border: 1px solid var(--border-color);
+  color: var(--text-title);
   border-bottom-left-radius: 4px;
 }
 
@@ -395,7 +395,7 @@
 .ai .message-content h2, 
 .ai .message-content h3, 
 .ai .message-content h4 {
-  color: white;
+  color: var(--text-title);
   margin-top: 1rem;
   margin-bottom: 0.5rem;
   font-weight: 700;
@@ -415,33 +415,33 @@
 }
 
 .ai .message-content code {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(234, 88, 12, 0.08);
   padding: 0.2rem 0.4rem;
   border-radius: 4px;
   font-family: monospace;
   font-size: 0.85em;
-  color: #06b6d4; /* teal/cyan color */
+  color: var(--primary);
 }
 
 .ai .message-content pre {
-  background: rgba(0, 0, 0, 0.3);
+  background: rgba(0, 0, 0, 0.04);
   padding: 0.75rem 1rem;
   border-radius: 8px;
   overflow-x: auto;
   margin-bottom: 0.75rem;
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-color);
 }
 
 .ai .message-content pre code {
   background: transparent;
   padding: 0;
   border-radius: 0;
-  color: #e2e8f0;
+  color: var(--text-title);
   font-size: 0.9rem;
 }
 
 .ai .message-content strong {
-  color: white;
+  color: var(--text-title);
   font-weight: 600;
 }
 
@@ -458,15 +458,15 @@
   align-items: center;
   gap: 0.25rem;
   padding: 0.2rem 0.5rem;
-  background: rgba(6, 182, 212, 0.1);
+  background: rgba(244, 63, 94, 0.08);
   color: var(--secondary);
-  border: 1px solid rgba(6, 182, 212, 0.2);
+  border: 1px solid rgba(244, 63, 94, 0.15);
   border-radius: 6px;
   text-decoration: none;
 }
 
 .citation-badge:hover {
-  background: rgba(6, 182, 212, 0.2);
+  background: rgba(244, 63, 94, 0.15);
 }
 
 .chat-input-bar {
@@ -479,10 +479,10 @@
 .chat-input {
   flex: 1;
   padding: 0.875rem 1.25rem;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--bg-light-badge);
+  border: 1px solid var(--border-color);
   border-radius: 12px;
-  color: white;
+  color: var(--text-title);
   outline: none;
   font-family: inherit;
   font-size: 0.95rem;
@@ -504,18 +504,18 @@
   border-radius: 12px;
   color: white;
   cursor: pointer;
-  box-shadow: 0 4px 12px rgba(6, 182, 212, 0.3);
+  box-shadow: 0 4px 12px var(--secondary-glow);
   transition: all 0.3s ease;
 }
 
 .btn-send:hover {
-  background: #0891b2;
+  background: #e11d48; /* Premium Rose Red hover */
   transform: translateY(-1px);
 }
 
 .btn-send:disabled {
-  background: rgba(255, 255, 255, 0.05);
-  color: rgba(255, 255, 255, 0.2);
+  background: var(--bg-light-badge);
+  color: var(--text-very-dim);
   box-shadow: none;
   cursor: not-allowed;
   transform: none;
@@ -530,9 +530,9 @@
 }
 
 .btn-suggestion {
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  color: rgba(255, 255, 255, 0.6);
+  background: var(--bg-light-badge);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
   padding: 0.4rem 0.875rem;
   border-radius: 20px;
   font-size: 0.825rem;
@@ -541,9 +541,9 @@
 }
 
 .btn-suggestion:hover {
-  background: rgba(168, 85, 247, 0.1);
+  background: rgba(234, 88, 12, 0.08);
   border-color: var(--primary-glow);
-  color: white;
+  color: var(--primary);
 }
 
 /* Profile details block */
@@ -574,12 +574,12 @@
 .profile-name {
   font-size: 1.3rem;
   font-weight: 700;
-  color: white;
+  color: var(--text-title);
 }
 
 .profile-bio {
   font-size: 0.9rem;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--text-muted);
   line-height: 1.4;
 }
 
@@ -588,20 +588,20 @@
   grid-template-columns: repeat(3, 1fr);
   gap: 1rem;
   margin-top: 0.75rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  border-top: 1px solid var(--border-color);
   padding-top: 0.75rem;
   text-align: center;
 }
 
 .profile-stat-val {
   font-weight: 700;
-  color: white;
+  color: var(--text-title);
   font-size: 1.1rem;
 }
 
 .profile-stat-lbl {
   font-size: 0.75rem;
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--text-dim);
 }
 
 @media (max-width: 1024px) {
