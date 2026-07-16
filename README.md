@@ -8,25 +8,45 @@ The system retrieves repositories, extracts README files, splits them into seman
 
 ## Architecture
 
-The diagram below illustrates the flow of data from profile analysis through the interactive RAG chat session.
+The system's architecture is divided into two main pipelines: GitHub Profile Ingestion & Embedding, and Semantic Search & RAG Chat.
+
+### 1. Ingestion & Embedding Pipeline
+This flow describes how developer READMEs are fetched, chunked, embedded locally, and stored in Redis.
 
 ```mermaid
-graph TD
-    Client[Client Browser / Swagger UI] -->|1. Request OTP / JWT Auth| FastAPI[FastAPI Backend]
-    Client -->|2. Request Profile Ingestion| FastAPI
-    FastAPI -->|3. Fetch Profile & READMEs| GitHubAPI[GitHub API]
-    GitHubAPI -->|4. Return README Data| FastAPI
-    FastAPI -->|5. Chunk READMEs & Generate Embeddings| HFModel[Local HuggingFace Model]
-    HFModel -->|6. Vectors 384-dim| FastAPI
-    FastAPI -->|7. Store Metadata & Vectors| Redis[Redis Vector DB]
+graph LR
+    subgraph Ingestion["1. Data Ingestion"]
+        Client[Client Browser] -->|Post Ingest Request| FastAPI[FastAPI Backend]
+        FastAPI -->|Fetch Profile & READMEs| GitHub[GitHub API]
+        GitHub -->|Return README Text| FastAPI
+    end
     
-    Client -->|8. Submit Question| FastAPI
-    FastAPI -->|9. Generate Question Vector| HFModel
-    FastAPI -->|10. KNN Cosine Similarity Search| Redis
-    Redis -->|11. Return Top K Chunks| FastAPI
-    FastAPI -->|12. Submit Prompt with Context| Groq[Groq LLM]
-    Groq -->|13. Return Grounded Response| FastAPI
-    FastAPI -->|14. Return Answer + Sources| Client
+    subgraph Embedding["2. Embedding & Storage"]
+        FastAPI -->|Split README into chunks| Chunks[Text Chunks]
+        Chunks -->|Send chunks| HF[Local HuggingFace Model]
+        HF -->|Return 384-dim vectors| FastAPI
+        FastAPI -->|Store Vectors & Metadata| Redis[Redis Vector DB]
+    end
+```
+
+### 2. Semantic Search & RAG Chat Pipeline
+This flow describes how user questions are answered using vector similarity search and Groq LLM synthesis.
+
+```mermaid
+graph LR
+    subgraph Query["1. Query Processing"]
+        User[Client Browser] -->|Submit Question| FastAPI[FastAPI Backend]
+        FastAPI -->|Send query text| HF[Local HuggingFace Model]
+        HF -->|Return query vector| FastAPI
+    end
+    
+    subgraph Retrieval["2. RAG & Response Generation"]
+        FastAPI -->|KNN Cosine Search| Redis[Redis Vector DB]
+        Redis -->|Return Top-K Chunks| FastAPI
+        FastAPI -->|Send Prompt + Context Chunks| Groq[Groq LLM]
+        Groq -->|Return Grounded Answer| FastAPI
+        FastAPI -->|Return Answer + Source citations| User
+    end
 ```
 
 ---
