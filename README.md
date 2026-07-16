@@ -1,341 +1,224 @@
-# 🚀 RedisRAG — AI Powered GitHub Profile Analyzer
+# RedisRAG - AI Powered GitHub Profile Analyzer
 
-RedisRAG is a full-stack backend application that lets you **analyze any GitHub profile** and then **chat with an AI** about their projects using Retrieval-Augmented Generation (RAG).
+RedisRAG is a full-stack application designed to analyze public GitHub profiles and enable interactive chat sessions about a developer's projects. It uses Retrieval-Augmented Generation (RAG) to ground the answers.
 
-It fetches repositories, extracts README files, generates semantic embeddings, stores them in a Redis Vector Database, and uses Google Gemini to answer natural language questions about the developer's work.
-
-> **Built as a learning project** — every file is well-documented with comments explaining *why* things work, not just *what* they do.
+The system retrieves repositories, extracts README files, splits them into semantic chunks, and generates vector embeddings using a local HuggingFace model. These embeddings are stored in a Redis Vector Database. When a user asks a question, a similarity search is performed in Redis, and the most relevant README segments are sent as context to the Groq LLM (Llama 3) to generate an accurate, source-cited response.
 
 ---
 
-## ✨ What It Does
+## Architecture
 
-### 🔐 Authentication
-| Feature | How It Works |
-|---|---|
-| Email OTP | 6-digit code sent via Gmail SMTP |
-| Redis Cache | OTP stored with 5-minute TTL |
-| PostgreSQL | User accounts persisted after first login |
-| JWT Tokens | Stateless auth for all protected routes |
+The diagram below illustrates the flow of data from profile analysis through the interactive RAG chat session.
 
-### 🧠 AI Analysis
-| Feature | How It Works |
-|---|---|
-| GitHub Fetching | Profile + repos + READMEs via GitHub API |
-| Text Chunking | READMEs split into ~250 word chunks |
-| Embeddings | Google `text-embedding-004` model |
-| Vector Search | Redis Vector Database (RediSearch) |
-| AI Chat | Google Gemini LLM with retrieved context |
-
----
-
-## 🏗️ Architecture
-
-```
-Client (Swagger UI / Frontend / cURL)
-│
-▼
-FastAPI Backend (:8000)
-│
-├── /auth/*  ─── Authentication ──── Redis (OTP) + PostgreSQL (Users)
-│
-├── /github/* ── GitHub Service ──── GitHub API → Embeddings → Redis Vector DB
-│
-└── /chat    ─── RAG Pipeline ────── Redis Vector Search → Gemini LLM → Answer
+```mermaid
+graph TD
+    Client[Client Browser / Swagger UI] -->|1. Request OTP / JWT Auth| FastAPI[FastAPI Backend]
+    Client -->|2. Request Profile Ingestion| FastAPI
+    FastAPI -->|3. Fetch Profile & READMEs| GitHubAPI[GitHub API]
+    GitHubAPI -->|4. Return README Data| FastAPI
+    FastAPI -->|5. Chunk READMEs & Generate Embeddings| HFModel[Local HuggingFace Model]
+    HFModel -->|6. Vectors 384-dim| FastAPI
+    FastAPI -->|7. Store Metadata & Vectors| Redis[Redis Vector DB]
+    
+    Client -->|8. Submit Question| FastAPI
+    FastAPI -->|9. Generate Question Vector| HFModel
+    FastAPI -->|10. KNN Cosine Similarity Search| Redis
+    Redis -->|11. Return Top K Chunks| FastAPI
+    FastAPI -->|12. Submit Prompt with Context| Groq[Groq LLM]
+    Groq -->|13. Return Grounded Response| FastAPI
+    FastAPI -->|14. Return Answer + Sources| Client
 ```
 
 ---
 
-## 📂 Project Structure
+## Features
+
+### Authentication and User Management
+- **Email OTP Verification**: Users log in by requesting a one-time passcode sent to their email.
+- **OTP Caching**: Passcodes are cached in Redis with a 5-minute time-to-live (TTL) to ensure secure, temporary verification.
+- **Persistent User Accounts**: Verified users are persisted in a PostgreSQL database after their first login.
+- **JSON Web Tokens (JWT)**: Stateless token authentication protects all core API endpoints.
+
+### Ingestion and Embedding Pipeline
+- **GitHub Scraping**: Public repository metadata and README files are fetched dynamically.
+- **Recursive Chunking**: README files are split into overlapping segments to fit token limitations and preserve semantic context.
+- **Local HuggingFace Embeddings**: Vectors are generated locally using the `sentence-transformers/all-MiniLM-L6-v2` model, removing external API dependencies and rate limits.
+- **Dynamic Schema Matching**: The backend automatically detects the vector dimension of the active HuggingFace model. If a dimension mismatch is found with the existing Redis search index, the index is deleted and recreated dynamically.
+
+### Search and Generative AI
+- **Redis Vector Search**: Cosine similarity is computed in-memory using RediSearch (KNN Flat algorithm) to retrieve the most relevant README segments.
+- **Groq LLM Integration**: Generates final grounded responses using the Llama 3 model family, ensuring fast and accurate answers.
+- **Source Attributions**: Every chat response details the specific repositories referenced in the context.
+
+---
+
+## Project Structure
 
 ```
-backend/
-│
-├── app/
-│   ├── api/                    # Route handlers (HTTP layer)
-│   │   ├── auth.py             # /auth/send-otp, /auth/verify-otp, /auth/me
-│   │   ├── github.py           # /github/analyze
-│   │   └── chat.py             # /chat
-│   │
-│   ├── core/                   # Shared infrastructure
-│   │   ├── config.py           # Centralized settings (pydantic-settings)
-│   │   ├── auth.py             # JWT auth dependency (reused by all protected routes)
-│   │   └── redis_client.py     # Redis connection
-│   │
-│   ├── db/                     # Database layer
-│   │   ├── database.py         # SQLAlchemy engine + session
-│   │   ├── models.py           # User model
-│   │   ├── crud.py             # Create/Read operations
-│   │   └── dependencies.py     # DB session dependency
-│   │
-│   ├── services/               # Business logic (the real work happens here)
-│   │   ├── otp_service.py      # Generate random OTP
-│   │   ├── email_service.py    # Send emails via Gmail SMTP
-│   │   ├── jwt_service.py      # Create & verify JWT tokens
-│   │   ├── github_service.py   # Fetch data from GitHub API
-│   │   ├── embedding_service.py # Chunk text → embeddings → Redis Vector Store
-│   │   └── rag_service.py      # Semantic search → LLM → answer
-│   │
-│   ├── schemas/                # Request/Response validation (Pydantic)
-│   │   ├── auth.py
-│   │   ├── github.py
-│   │   └── chat.py
-│   │
-│   └── main.py                 # FastAPI app entry point
-│
-├── docker-compose.yml          # Redis Stack + PostgreSQL
-├── requirements.txt            # Python dependencies
-└── .env                        # Environment variables (not committed)
+.
+├── backend/
+│   ├── app/
+│   │   ├── api/             # Route handlers (auth, github ingestion, chat)
+│   │   ├── core/            # Configuration, Redis and JWT clients
+│   │   ├── db/              # SQLAlchemy models, sessions, and CRUD operations
+│   │   ├── schemas/         # Pydantic request and response schemas
+│   │   └── services/        # Service layer (OTP, email, GitHub, embeddings, RAG)
+│   ├── requirements.txt     # Python backend dependencies
+│   └── main.py              # Application entry point
+├── frontend/
+│   ├── src/                 # React frontend application
+│   ├── package.json         # Node.js dependencies and scripts
+│   └── vite.config.ts       # Vite configuration
+├── docker-compose.yml       # Docker configuration for Redis Stack and PostgreSQL
+└── .env                     # Configuration file (not committed to git)
 ```
 
 ---
 
-## ⚙️ Setup
+## Setup and Installation
 
 ### Prerequisites
-- Python 3.11+
-- Docker Desktop
-- Gmail account with [App Password](https://support.google.com/accounts/answer/185833)
-- [Google AI API Key](https://aistudio.google.com/apikey) (free tier)
+- Python 3.11 or higher
+- Node.js 18 or higher
+- Docker and Docker Compose
+- Gmail SMTP credentials or access to an SMTP mail server
 
-### 1. Clone & Setup
-
-```bash
-git clone https://github.com/yourusername/RedisRAG.git
-cd RedisRAG
-```
-
-### 2. Start Docker Services
-
+### 1. Run Databases with Docker
+Start Redis Stack (which includes the RediSearch and RedisJSON modules) and PostgreSQL:
 ```bash
 docker compose up -d
 ```
+This maps:
+- Redis Stack to port `6379`
+- RedisInsight UI to port `8001`
+- PostgreSQL to port `5432`
 
-This starts:
-- **Redis Stack** on port `6379` (Redis + RediSearch for vector search)
-- **PostgreSQL** on port `5432`
-
-### 3. Create Virtual Environment
-
-```bash
-cd backend
-python -m venv venv
-
-# Windows
-venv\Scripts\activate
-
-# Linux/Mac
-source venv/bin/activate
-```
-
-### 4. Install Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 5. Configure Environment
-
-Edit the `.env` file in the project root:
-
+### 2. Configure Environment Variables
+Create a `.env` file in the root directory:
 ```env
 EMAIL_ADDRESS=your-email@gmail.com
-EMAIL_PASSWORD=your-gmail-app-password
+EMAIL_PASSWORD=your-smtp-app-password
 
 DATABASE_URL=postgresql://postgres:admin123@localhost:5432/redisrag
 
 REDIS_HOST=localhost
 REDIS_PORT=6379
 
-SECRET_KEY=your-secret-key
+SECRET_KEY=your-jwt-secret-key
+GITHUB_TOKEN=your-github-personal-access-token
 
-GOOGLE_API_KEY=your-google-api-key
+GROQ_API_KEY=your-groq-api-key
+
+HF_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+HUGGINGFACEHUB_API_TOKEN=your-huggingface-token
+HF_TOKEN=your-huggingface-token
 ```
 
-### 6. Run the Server
-
+### 3. Start Backend Services
+Navigate to the `backend` folder, set up a virtual environment, install dependencies, and run the server:
 ```bash
+cd backend
+python -m venv venv
+
+# Activate virtual environment
+# Windows:
+venv\Scripts\activate
+# Linux/macOS:
+source venv/bin/activate
+
+pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
+The backend API documentation is available at: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
 
-📖 **Swagger Docs**: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+### 4. Start Frontend Application
+Navigate to the `frontend` directory, install packages, and launch the development server:
+```bash
+cd ../frontend
+npm install
+npm run dev
+```
+The client dashboard runs at: [http://localhost:5173/](http://localhost:5173/).
 
 ---
 
-## 🔌 API Reference
+## API Reference
 
 ### Authentication
 
-#### Send OTP
-```http
-POST /auth/send-otp
-Content-Type: application/json
-
-{
+#### Request OTP
+- **Endpoint**: `POST /auth/send-otp`
+- **Body**:
+  ```json
+  {
     "email": "user@example.com"
-}
-```
+  }
+  ```
 
-#### Verify OTP & Get Token
-```http
-POST /auth/verify-otp
-Content-Type: application/json
-
-{
+#### Verify OTP
+- **Endpoint**: `POST /auth/verify-otp`
+- **Body**:
+  ```json
+  {
     "email": "user@example.com",
     "otp": "123456"
-}
-```
-
-Response:
-```json
-{
+  }
+  ```
+- **Response**:
+  ```json
+  {
     "verified": true,
     "message": "OTP verified successfully",
-    "access_token": "eyJhbGciOiJIUzI1NiIs..."
-}
-```
+    "access_token": "eyJhbGciOiJIUzI1Ni..."
+  }
+  ```
 
-#### Get Current User
-```http
-GET /auth/me
-Authorization: Bearer <JWT_TOKEN>
-```
+### GitHub Profile Analysis
 
----
-
-### GitHub Analysis
-
-#### Analyze Profile
-```http
-POST /github/analyze
-Authorization: Bearer <JWT_TOKEN>
-Content-Type: application/json
-
-{
+#### Ingest Profile
+- **Endpoint**: `POST /github/analyze`
+- **Headers**: `Authorization: Bearer <access_token>`
+- **Body**:
+  ```json
+  {
     "username": "torvalds"
-}
-```
+  }
+  ```
 
-This will:
-1. Fetch the user's profile and repositories from GitHub
-2. Download all README files
-3. Split them into chunks and generate embeddings
-4. Store everything in Redis Vector Database
+#### Check Ingestion Status
+- **Endpoint**: `GET /github/status/{username}`
+- **Headers**: `Authorization: Bearer <access_token>`
+- **Response Statuses**: `not_started`, `processing`, `completed`, `failed`
 
----
+### RAG Chat
 
-### AI Chat
-
-#### Ask a Question
-```http
-POST /chat
-Authorization: Bearer <JWT_TOKEN>
-Content-Type: application/json
-
-{
+#### Submit Question
+- **Endpoint**: `POST /chat`
+- **Headers**: `Authorization: Bearer <access_token>`
+- **Body**:
+  ```json
+  {
     "username": "torvalds",
-    "question": "What programming languages are used in the projects?"
-}
-```
-
-Response:
-```json
-{
-    "answer": "Based on the repositories, the primary language used is C...",
-    "sources": ["linux", "subsurface-for-dirk"]
-}
-```
-
----
-
-## 🔄 How It All Works
-
-### Authentication Flow
-```
-User enters email
-        ↓
-Generate 6-digit OTP
-        ↓
-Store OTP in Redis (5 min TTL)
-        ↓
-Send OTP via Gmail SMTP
-        ↓
-User submits OTP
-        ↓
-Verify against Redis
-        ↓
-Create user in PostgreSQL (if new)
-        ↓
-Return JWT token
-        ↓
-✅ Authenticated — use token for all requests
-```
-
-### RAG Workflow
-```
-GitHub Username
-        ↓
-Fetch Repositories (GitHub API)
-        ↓
-Download README Files
-        ↓
-Split into Chunks (1000 chars, 200 overlap)
-        ↓
-Generate Embeddings (Google text-embedding-004)
-        ↓
-Store in Redis Vector Database
-        ↓
-User asks a question
-        ↓
-Convert question → embedding → find similar chunks
-        ↓
-Send chunks + question to Gemini LLM
-        ↓
-AI generates grounded answer
-```
+    "question": "What primary language is used in the linux repository?"
+  }
+  ```
+- **Response**:
+  ```json
+  {
+    "answer": "The primary language used in the linux repository is C...",
+    "sources": ["linux"]
+  }
+  ```
 
 ---
 
-## 🛠️ Tech Stack
+## Key Technical Concepts
 
-| Layer | Technology |
-|---|---|
-| Framework | FastAPI |
-| Language | Python 3.11+ |
-| ORM | SQLAlchemy |
-| Validation | Pydantic |
-| Database | PostgreSQL |
-| Cache & Vectors | Redis Stack (RediSearch) |
-| Auth | JWT + Email OTP |
-| AI Framework | LangChain |
-| Embeddings | Google text-embedding-004 |
-| LLM | Google Gemini 2.0 Flash |
-| HTTP Client | httpx |
-| DevOps | Docker Compose |
+### Retrieval-Augmented Generation (RAG)
+Instead of asking an LLM to answer questions purely from its pre-trained parameters (which can lead to hallucinations), a RAG pipeline first queries a vector database for documents related to the question. These relevant context snippets are appended to the LLM's prompt, instructing the model to synthesize a factually accurate answer grounded in the retrieved documentation.
 
----
+### Vector Embeddings
+An embedding model converts text into a high-dimensional vector of floating-point numbers. In this vector space, the geometric distance (e.g., Cosine distance) between two vectors corresponds to the semantic similarity of their respective texts. The `sentence-transformers/all-MiniLM-L6-v2` model maps text chunks to 384-dimensional vectors.
 
-## 💡 Key Concepts (For Learning)
-
-### What is RAG?
-**Retrieval-Augmented Generation** = instead of asking an AI to answer from memory (which can be wrong), we first *retrieve* relevant documents, then give them to the AI as context. This grounds the AI's answers in real data.
-
-### What are Embeddings?
-A list of numbers (vector) that represents the *meaning* of text. Similar text → similar vectors. This enables "semantic search" — searching by meaning, not just keywords.
-
-### Why Redis for Vectors?
-Redis with the RediSearch module supports vector similarity search, making it extremely fast for finding relevant text chunks. It's also already used for OTP caching, so one less service to manage.
-
-### Why Chunk Documents?
-LLMs have context limits, and large documents contain many topics. Smaller chunks (with overlap to avoid cutting sentences) give more precise search results.
-
----
-
-## 👨‍💻 Author
-
-**Abdul Mujeeb** — Backend Developer • AI Engineer • Generative AI Enthusiast
-
----
-
-⭐ If you found this project useful, consider giving it a star!
+### In-Memory Vector Search
+Redis Stack utilizes the RediSearch module to build indexes on Vector fields within stored Redis Hashes. It performs K-Nearest Neighbors (KNN) searches directly in memory, calculating the similarity score between a query vector and the index in fractions of a millisecond.
