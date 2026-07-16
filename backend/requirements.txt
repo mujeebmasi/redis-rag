@@ -28,7 +28,8 @@ redis
 httpx
 
 # ── AI / LangChain ──────────────────────────────────────────
-langchain-google-genai
+langchain-huggingface
+sentence-transformers
 langchain-groq
 langchain-text-splitters
 langchain-core

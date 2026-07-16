@@ -27,13 +27,16 @@ search actually works at the Redis level.
 """
 
 import json
+import re
 import struct
 import numpy as np
+import time
+import random
 from redis.commands.search.field import TextField, TagField, VectorField
 from redis.commands.search.index_definition import IndexDefinition, IndexType
 from redis.commands.search.query import Query
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 
 from app.core.config import settings
 from app.core.redis_client import redis_client_raw
@@ -42,7 +45,6 @@ from app.core.redis_client import redis_client_raw
 
 INDEX_NAME = "idx:github_readmes"     # RediSearch index name
 DOC_PREFIX = "doc:readme:"            # Key prefix for stored documents
-VECTOR_DIM = 3072                     # Dimensions of gemini-embedding-001
 
 # ── Text Splitter ────────────────────────────────────────────────────
 # Splits large README files into smaller, overlapping chunks.
@@ -62,16 +64,32 @@ text_splitter = RecursiveCharacterTextSplitter(
 
 
 # ── Embedding Model ─────────────────────────────────────────────────
-# Converts text into 768-dimensional vectors using Google's embedding model.
-# Free tier: 1,500 requests/minute (plenty for this project).
+# Converts text into vectors using a HuggingFace embedding model.
+# Defaults to sentence-transformers/all-MiniLM-L6-v2 (384 dimensions).
+
+_embeddings_model = None
 
 
-def _get_embeddings_model() -> GoogleGenerativeAIEmbeddings:
-    """Create the embedding model instance."""
-    return GoogleGenerativeAIEmbeddings(
-        model="models/gemini-embedding-001",
-        google_api_key=settings.GOOGLE_API_KEY,
-    )
+def _get_embeddings_model() -> HuggingFaceEmbeddings:
+    """Create and cache the HuggingFace embedding model instance."""
+    global _embeddings_model
+    if _embeddings_model is None:
+        _embeddings_model = HuggingFaceEmbeddings(
+            model_name=settings.HF_EMBEDDING_MODEL,
+            model_kwargs={"device": "cpu"},
+        )
+    return _embeddings_model
+
+
+def _get_vector_dim() -> int:
+    """Gets the embedding vector dimension dynamically."""
+    model = _get_embeddings_model()
+    try:
+        # Standard sentence-transformers client method
+        return model.client.get_sentence_embedding_dimension()
+    except Exception:
+        # Fallback by embedding a test query
+        return len(model.embed_query("test"))
 
 
 def _vector_to_bytes(vector: list[float]) -> bytes:
@@ -90,20 +108,38 @@ def _vector_to_bytes(vector: list[float]) -> bytes:
 def _create_index_if_not_exists() -> None:
     """
     Create the RediSearch vector index if it doesn't already exist.
+    If the index exists but has a different dimension, recreate it.
     
     The index defines:
     - content (TEXT): the actual text chunk (searchable by keywords too)
     - username (TAG): GitHub username (for filtering by user)
     - repo_name (TAG): repository name (for filtering by repo)
-    - embedding (VECTOR): the 768-dim embedding vector (for similarity search)
+    - embedding (VECTOR): the embedding vector (for similarity search)
     
     FLAT algorithm: brute-force search (fine for < 100K vectors)
     COSINE distance: measures angle between vectors (standard for text)
     """
+    vector_dim = _get_vector_dim()
     try:
-        # Check if index already exists
-        redis_client_raw.ft(INDEX_NAME).info()
-        return  # Index exists, nothing to do
+        info = redis_client_raw.ft(INDEX_NAME).info()
+        # Check current index dimension to handle model swaps seamlessly
+        attributes = info.get("attributes", [])
+        current_dim = None
+        for attr in attributes:
+            attr_strs = [x.decode("utf-8") if isinstance(x, bytes) else str(x) for x in attr]
+            if "embedding" in attr_strs and "dim" in attr_strs:
+                try:
+                    dim_idx = attr_strs.index("dim")
+                    current_dim = int(attr[dim_idx + 1])
+                except (ValueError, IndexError):
+                    pass
+                break
+        
+        if current_dim is not None and current_dim != vector_dim:
+            print(f"Dimension mismatch in Redis index (found {current_dim}, expected {vector_dim}). Recreating index...")
+            redis_client_raw.ft(INDEX_NAME).dropindex(delete_documents=True)
+        else:
+            return  # Index exists and dimension matches, nothing to do
 
     except Exception:
         # Index doesn't exist — create it
@@ -119,7 +155,7 @@ def _create_index_if_not_exists() -> None:
             "FLAT",                      # Algorithm: FLAT = brute force (simple, accurate)
             {
                 "TYPE": "FLOAT32",       # 32-bit floating point
-                "DIM": VECTOR_DIM,       # 768 dimensions
+                "DIM": vector_dim,       # dimensions dynamically fetched
                 "DISTANCE_METRIC": "COSINE",  # Cosine similarity
             },
         ),
@@ -148,7 +184,7 @@ def embed_and_store(username: str, repositories: list[dict]) -> int:
     1. Create the RediSearch index (if it doesn't exist)
     2. Filter repos that have README content
     3. Split each README into chunks
-    4. Generate embedding vectors for all chunks (batched)
+    4. Generate embedding vectors for all chunks
     5. Store each chunk as a Redis Hash with vector + metadata
     
     Args:
@@ -187,9 +223,16 @@ def embed_and_store(username: str, repositories: list[dict]) -> int:
     if not chunks:
         return 0
 
-    # Step 4: Generate embeddings for all chunks at once (batched = faster)
+    # Step 4: Generate embeddings for all chunks (batched)
     embeddings_model = _get_embeddings_model()
-    vectors = embeddings_model.embed_documents(chunks)
+    
+    BATCH_SIZE = 32
+    vectors = []
+    
+    for i in range(0, len(chunks), BATCH_SIZE):
+        batch = chunks[i:i + BATCH_SIZE]
+        batch_vectors = embeddings_model.embed_documents(batch)
+        vectors.extend(batch_vectors)
 
     # Step 5: Store each chunk in Redis as a Hash
     # Key format: doc:readme:{username}:{repo}:{index}
@@ -257,10 +300,9 @@ def search_similar(query: str, username: str, top_k: int = 5) -> list[dict]:
     # Step 3: Build and run the Redis vector search query
     # Syntax: (@username:{username})=>[KNN 5 @embedding $vec AS score]
     # This says: "filter by username, then find 5 nearest vectors, call the distance 'score'"
-    # RediSearch tags require escaping of special characters like hyphens
-    escaped_username = username
-    for char in r",./-+*?^$()[]{}|\:!@#%&=<>":
-        escaped_username = escaped_username.replace(char, f"\\{char}")
+    # RediSearch tags require escaping of special characters like hyphens.
+    # We use a single-pass regex replacement to avoid double-escaping the backslash.
+    escaped_username = re.sub(r"([,./\-+*?^$()[\]{}|\\:!@#%&=<>])", r"\\\1", username)
 
     redis_query = (
         Query(f"(@username:{{{escaped_username}}})=>[KNN {top_k} @embedding $vec AS score]")

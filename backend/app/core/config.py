@@ -45,9 +45,12 @@ class Settings(BaseSettings):
     # ── GitHub (optional - works without it, but rate limited) ──────
     GITHUB_TOKEN: str | None = None
 
-    # ── AI (Google Gemini & Groq) ───────────────────────────────────
+    # ── AI (Google Gemini, Groq & HuggingFace) ──────────────────────
     GOOGLE_API_KEY: str = ""
     GROQ_API_KEY: str = ""
+    HF_EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
+    HUGGINGFACEHUB_API_TOKEN: str | None = None
+    HF_TOKEN: str | None = None
 
     model_config = {
         "env_file": str(_ENV_FILE),
