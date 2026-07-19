@@ -28,9 +28,10 @@ class Settings(BaseSettings):
     2. .env file (via model_config)
     """
 
-    # ── Email (Gmail SMTP) ──────────────────────────────────────────
-    EMAIL_ADDRESS: str
-    EMAIL_PASSWORD: str
+    # ── Email Providers ─────────────────────────────────────────────
+    EMAIL_ADDRESS: str = ""
+    EMAIL_PASSWORD: str = ""
+    RESEND_API_KEY: str | None = None
 
     # ── Database (PostgreSQL) ───────────────────────────────────────
     DATABASE_URL: str = "postgresql://postgres:admin123@localhost:5432/redisrag"
