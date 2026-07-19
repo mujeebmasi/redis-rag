@@ -10,16 +10,21 @@ Swagger Docs:
     http://127.0.0.1:8000/docs
 """
 
+print("DEBUG: app.main starting", flush=True)
 import logging
 from contextlib import asynccontextmanager
 
+print("DEBUG: importing fastapi", flush=True)
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
+print("DEBUG: importing routers", flush=True)
 from app.api.auth import router as auth_router
 from app.api.github import router as github_router
 from app.api.chat import router as chat_router
+
+print("DEBUG: importing db", flush=True)
 from app.db.database import Base, engine
 from app.db import models  # noqa: F401 — ensures models are registered
 
