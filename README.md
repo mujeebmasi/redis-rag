@@ -234,9 +234,38 @@ The client dashboard runs at: [http://localhost:5173/](http://localhost:5173/).
 
 ## Production & Deployment Optimizations
 
-When deploying to cloud platforms with constrained resources (such as **Render's Free Tier**, which limits memory to **512MB RAM**), running heavy machine learning frameworks locally in the container presents significant challenges. We implemented two critical optimizations to ensure our application runs stably in production with a tiny memory footprint.
+When deploying to cloud platforms with constrained resources (such as **Render's Free Tier**, which limits memory to **512MB RAM**), running heavy machine learning frameworks locally in the container presents significant challenges. We implemented several critical optimizations to ensure our application runs stably in production with a tiny memory footprint, high resilience, and robust error handling.
 
-### 1. Lazy-Loading Imports (Deferred Loading)
+### 1. Dual-Mode Embedding Architecture (Mermaid Flow)
+To completely prevent the heavy PyTorch runtime from loading in production, the application dynamically detects the environment and switches the vector search path:
+
+```mermaid
+graph TD
+    subgraph Env["1. Environment Detection"]
+        Start[App Ingestion/Query Request] --> Check{Is Render or Token Configured?}
+    end
+
+    subgraph Production["2. Production Mode (Render Cloud)"]
+        Check -->|Yes / RENDER=true| HF_API[Lightweight HTTP Client]
+        HF_API -->|POST Request| HF_Cloud[Hugging Face Cloud Inference API]
+        HF_Cloud -->|Return 384-dim Vectors| Out_Prod[Vector Search / Storage]
+    end
+
+    subgraph Development["2. Local Mode (Offline Dev)"]
+        Check -->|No / Local Environment| Lazy_Load[Lazy Load sentence-transformers & PyTorch]
+        Lazy_Load -->|Run Model locally on CPU| CPU_Compute[Local CPU Vector Computation]
+        CPU_Compute -->|Return 384-dim Vectors| Out_Dev[Vector Search / Storage]
+    end
+
+    style Production fill:#d4edda,stroke:#28a745,stroke-width:2px
+    style Development fill:#fff3cd,stroke:#ffc107,stroke-width:2px
+```
+
+* **Local Mode (Offline)**: If running locally without production triggers, the app loads `HuggingFaceEmbeddings` locally using the CPU and model weights, ensuring the app remains 100% functional offline without external APIs.
+* **Production Mode (Render)**: If the system detects it is running on Render (`os.getenv("RENDER") == "true"`) or if a Hugging Face Hub token is present, it routes vector generation to a custom, lightweight `HuggingFaceAPIEmbeddings` client. This client generates the exact same **384-dimensional vectors** by making HTTP calls to the **Hugging Face Cloud Inference API** via `httpx`.
+* This architecture keeps the production memory footprint consistently low while preserving local, self-hosted offline execution.
+
+### 2. Lazy-Loading Imports (Deferred Loading)
 By default, importing large machine learning and AI orchestration packages (like PyTorch/`torch`, `sentence-transformers`, or LangChain) at the module level in Python initializes background runtimes and caches that can consume **400MB+ of RAM** immediately on app boot. This leads to Out of Memory (OOM) silent crashes during server startup, preventing Uvicorn from binding to the assigned port.
 
 We restructured the codebase to utilize **Lazy Loading (Deferred Importing)**:
@@ -244,11 +273,18 @@ We restructured the codebase to utilize **Lazy Loading (Deferred Importing)**:
 - Uvicorn startup completes in **under 2 seconds**, utilizing only **~50MB of RAM** (a 90% reduction).
 - Health checks pass instantly, and services deploy without port scan timeouts.
 
-### 2. Dual-Mode Embeddings (Local vs. Cloud API)
-To completely prevent the heavy PyTorch runtime from loading in production, the application detects the environment and changes how it processes embeddings:
-- **Local Mode (Offline)**: If running locally without environment-level cloud triggers, the app loads `HuggingFaceEmbeddings` locally using the CPU and model weights, ensuring the app remains 100% functional offline without external APIs.
-- **Production Mode (Render)**: If the system detects it is running on Render (`os.getenv("RENDER") == "true"`) or if a Hugging Face Hub token is present, it routes vector generation to a custom, lightweight `HuggingFaceAPIEmbeddings` client. This client generates the exact same **384-dimensional vectors** by making HTTP calls to the **Hugging Face Cloud Inference API** via `httpx`.
-- This architecture keeps the production memory footprint consistently low while preserving local, self-hosted offline execution.
+### 3. Database Connection Resilience (connect_timeout)
+During server start, FastAPI runs database setup tasks (like verifying/creating PostgreSQL tables). If PostgreSQL experiences a cold start, network handshake delay, or temporary sleep phase (common on serverless databases like Neon), the database connection attempt can hang indefinitely.
+- We added `connect_timeout: 10` to SQLAlchemy's PostgreSQL engine connection arguments.
+- If a connection attempt takes longer than 10 seconds, it raises an exception, which is caught gracefully. This prevents a database hang from blocking the entire FastAPI lifespan boot sequence and causing a Render port scan timeout.
+
+### 4. Browser CORS Stack Standardization
+Because the RAG application uses Bearer Token authentication headers rather than Session Cookies, we standardized the FastAPI CORS middleware settings:
+- Changed `allow_credentials=False` for browser compatibility when wildcard origins (`allow_origins=["*"]`) are used. This allows any frontend client to make cross-origin API calls without security exceptions.
+
+### 5. Safe UTF-8 README base64 Decoding
+GitHub API returns repository README files as base64-encoded bytes. If a repository has non-UTF-8 characters, binary files, or images in its README, typical string decoding crashes the entire profile ingestion pipeline.
+- We implemented `errors="replace"` in the byte-decoding string logic of `github_service.py` to ensure that ingestion never crashes on non-standard Unicode characters.
 
 ---
 
