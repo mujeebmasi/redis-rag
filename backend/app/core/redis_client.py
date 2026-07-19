@@ -20,6 +20,7 @@ from app.core.config import settings
 redis_client = redis.Redis(
     host=settings.REDIS_HOST,
     port=settings.REDIS_PORT,
+    password=settings.REDIS_PASSWORD,
     decode_responses=True,
     protocol=2
 )
@@ -28,6 +29,7 @@ redis_client = redis.Redis(
 redis_client_raw = redis.Redis(
     host=settings.REDIS_HOST,
     port=settings.REDIS_PORT,
+    password=settings.REDIS_PASSWORD,
     decode_responses=False,
     protocol=2
 )
