@@ -26,7 +26,7 @@
 
 .landing-subtitle {
   font-size: 1.25rem;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--text-muted);
   max-width: 600px;
   margin-bottom: 2.5rem;
   line-height: 1.6;
@@ -92,12 +92,12 @@
   font-size: 1.35rem;
   font-weight: 700;
   margin-bottom: 0.75rem;
-  color: white;
+  color: var(--text-title);
 }
 
 .feature-desc {
   font-size: 0.95rem;
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--text-muted);
   line-height: 1.6;
 }
 
@@ -178,9 +178,9 @@
 }
 
 .btn-secondary {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: white;
+  background: var(--bg-light-badge);
+  border: 1px solid var(--border-color);
+  color: var(--text-title);
   padding: 0.5rem 1.25rem;
   border-radius: 8px;
   cursor: pointer;
@@ -190,8 +190,9 @@
 }
 
 .btn-secondary:hover {
-  background: rgba(255, 255, 255, 0.1);
-  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 90, 54, 0.1);
+  border-color: var(--primary);
+  color: var(--primary);
 }
 
 .workspace-body {
@@ -232,9 +233,9 @@
   gap: 0.75rem;
   margin-top: 1.5rem;
   padding: 1rem;
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--bg-light-badge);
   border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-color);
 }
 
 .status-badge {
@@ -311,7 +312,7 @@
   display: flex;
   gap: 1.25rem;
   font-size: 0.8rem;
-  color: var(--text-dim);
+  color: var(--text-muted-dim);
 }
 
 .repo-stat {
@@ -604,7 +605,7 @@
 
 .profile-stat-lbl {
   font-size: 0.75rem;
-  color: var(--text-dim);
+  color: var(--text-muted-dim);
 }
 
 @media (max-width: 1024px) {
