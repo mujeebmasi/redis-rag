@@ -66,7 +66,7 @@ class HuggingFaceAPIEmbeddings:
     def __init__(self, model_name: str, hf_token: str | None = None):
         self.model_name = model_name
         self.hf_token = hf_token
-        self.api_url = f"https://api-inference.huggingface.co/models/{model_name}"
+        self.api_url = f"https://router.huggingface.co/hf-inference/models/{model_name}/pipeline/feature-extraction"
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
         headers = {}
