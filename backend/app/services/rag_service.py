@@ -22,10 +22,6 @@ This is the key pattern that makes AI applications reliable and useful.
 import asyncio
 import logging
 
-from langchain_groq import ChatGroq
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-
 logger = logging.getLogger(__name__)
 
 from app.services.embedding_service import search_similar, embed_and_store
@@ -37,8 +33,9 @@ from app.core.config import settings
 # temperature=0.3 means slightly creative but mostly factual answers.
 
 
-def _get_llm() -> ChatGroq:
+def _get_llm():
     """Create the LLM instance using Groq Llama 3."""
+    from langchain_groq import ChatGroq
     return ChatGroq(
         model="llama-3.3-70b-versatile",
         groq_api_key=settings.GROQ_API_KEY,
@@ -50,8 +47,15 @@ def _get_llm() -> ChatGroq:
 # This tells the LLM HOW to use the retrieved context.
 # Clear instructions = better answers.
 
-RAG_PROMPT = ChatPromptTemplate.from_template(
-    """You are an elite AI technical assistant specialized in analyzing GitHub profiles and developer portfolios.
+_rag_prompt = None
+
+
+def _get_rag_prompt():
+    global _rag_prompt
+    if _rag_prompt is None:
+        from langchain_core.prompts import ChatPromptTemplate
+        _rag_prompt = ChatPromptTemplate.from_template(
+            """You are an elite AI technical assistant specialized in analyzing GitHub profiles and developer portfolios.
 Your goal is to provide insightful, comprehensive, and professional answers about the developer's projects, technical skills, and experience based on the provided context.
 
 Follow these guidelines to deliver outstanding responses:
@@ -68,7 +72,8 @@ Developer's GitHub Context:
 User's Question: {question}
 
 Technical Answer:"""
-)
+        )
+    return _rag_prompt
 
 
 def _format_context(documents: list[dict]) -> str:
@@ -160,7 +165,8 @@ def ask(username: str, question: str) -> dict:
     #
     # The "|" operator chains these together (LangChain Expression Language)
 
-    chain = RAG_PROMPT | _get_llm() | StrOutputParser()
+    from langchain_core.output_parsers import StrOutputParser
+    chain = _get_rag_prompt() | _get_llm() | StrOutputParser()
 
     answer = chain.invoke({
         "context": context,

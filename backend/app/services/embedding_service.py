@@ -27,6 +27,8 @@ search actually works at the Redis level.
 """
 
 import json
+import os
+import httpx
 import re
 import struct
 import numpy as np
@@ -35,8 +37,6 @@ import random
 from redis.commands.search.field import TextField, TagField, VectorField
 from redis.commands.search.index_definition import IndexDefinition, IndexType
 from redis.commands.search.query import Query
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-
 from app.core.config import settings
 from app.core.redis_client import redis_client_raw
 
@@ -45,39 +45,74 @@ from app.core.redis_client import redis_client_raw
 INDEX_NAME = "idx:github_readmes"     # RediSearch index name
 DOC_PREFIX = "doc:readme:"            # Key prefix for stored documents
 
-# ── Text Splitter ────────────────────────────────────────────────────
-# Splits large README files into smaller, overlapping chunks.
-#
-# Why chunk?
-# - Embedding models have token limits
-# - Smaller chunks = more precise search results
-# - Overlap ensures we don't cut sentences in half
-#
-# chunk_size: max characters per chunk (1000 ≈ ~250 words)
-# chunk_overlap: characters shared between consecutive chunks
+_text_splitter = None
 
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=1000,
-    chunk_overlap=200,
-)
+def _get_text_splitter():
+    global _text_splitter
+    if _text_splitter is None:
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+        _text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=200,
+        )
+    return _text_splitter
 
 
 # ── Embedding Model ─────────────────────────────────────────────────
 # Converts text into vectors using a HuggingFace embedding model.
 # Defaults to sentence-transformers/all-MiniLM-L6-v2 (384 dimensions).
 
+class HuggingFaceAPIEmbeddings:
+    def __init__(self, model_name: str, hf_token: str | None = None):
+        self.model_name = model_name
+        self.hf_token = hf_token
+        self.api_url = f"https://api-inference.huggingface.co/models/{model_name}"
+
+    def _embed(self, texts: list[str]) -> list[list[float]]:
+        headers = {}
+        if self.hf_token:
+            headers["Authorization"] = f"Bearer {self.hf_token}"
+        try:
+            response = httpx.post(
+                self.api_url,
+                headers=headers,
+                json={"inputs": texts, "options": {"wait_for_model": True}},
+                timeout=30.0
+            )
+            response.raise_for_status()
+            result = response.json()
+            if isinstance(result, list) and len(result) > 0:
+                return result
+            raise ValueError(f"Unexpected API response: {result}")
+        except Exception as e:
+            raise RuntimeError(f"HuggingFace Inference API error: {str(e)}")
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return self._embed(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._embed([text])[0]
+
+
 _embeddings_model = None
 
 
-def _get_embeddings_model() -> HuggingFaceEmbeddings:
+def _get_embeddings_model():
     """Create and cache the HuggingFace embedding model instance."""
     global _embeddings_model
     if _embeddings_model is None:
-        from langchain_huggingface import HuggingFaceEmbeddings
-        _embeddings_model = HuggingFaceEmbeddings(
-            model_name=settings.HF_EMBEDDING_MODEL,
-            model_kwargs={"device": "cpu"},
-        )
+        token = settings.HUGGINGFACEHUB_API_TOKEN or settings.HF_TOKEN
+        if os.getenv("RENDER") == "true" or token:
+            _embeddings_model = HuggingFaceAPIEmbeddings(
+                model_name=settings.HF_EMBEDDING_MODEL,
+                hf_token=token,
+            )
+        else:
+            from langchain_huggingface import HuggingFaceEmbeddings
+            _embeddings_model = HuggingFaceEmbeddings(
+                model_name=settings.HF_EMBEDDING_MODEL,
+                model_kwargs={"device": "cpu"},
+            )
     return _embeddings_model
 
 
@@ -211,7 +246,7 @@ def embed_and_store(username: str, repositories: list[dict]) -> int:
             continue
 
         # Split README into chunks
-        repo_chunks = text_splitter.split_text(readme)
+        repo_chunks = _get_text_splitter().split_text(readme)
 
         for chunk in repo_chunks:
             chunks.append(chunk)
