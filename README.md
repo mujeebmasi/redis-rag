@@ -286,6 +286,11 @@ Because the RAG application uses Bearer Token authentication headers rather than
 GitHub API returns repository README files as base64-encoded bytes. If a repository has non-UTF-8 characters, binary files, or images in its README, typical string decoding crashes the entire profile ingestion pipeline.
 - We implemented `errors="replace"` in the byte-decoding string logic of `github_service.py` to ensure that ingestion never crashes on non-standard Unicode characters.
 
+### 6. Resend Email API Integration (Bypassing SMTP Blocks)
+Standard outbound SMTP connections (port 465) to Gmail are typically blocked by cloud firewalls to prevent spam, causing direct email delivery to fail or hang on Render.
+- We integrated the **Resend Email API** via `httpx` POST requests (port 443/HTTPS), which are never blocked by cloud firewalls.
+- We added a fallback sequence: if a `RESEND_API_KEY` is present, it routes the OTP verification mail through Resend's API. If not, it falls back to the local Gmail SMTP configuration, and if both fail/are unconfigured, it logs the generated OTP directly to the container console logs for easy debugging.
+
 ---
 
 ## Key Technical Concepts
