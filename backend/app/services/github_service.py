@@ -105,7 +105,7 @@ async def fetch_readme(client: httpx.AsyncClient, owner: str, repo: str) -> str 
         data = response.json()
         # GitHub returns content as base64
         content_b64 = data.get("content", "")
-        return base64.b64decode(content_b64).decode("utf-8")
+        return base64.b64decode(content_b64).decode("utf-8", errors="replace")
 
     except httpx.HTTPStatusError as e:
         # Only swallow 404 Not Found since it means the repo has no README
