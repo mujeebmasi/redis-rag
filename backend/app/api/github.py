@@ -14,6 +14,7 @@ before you can ask questions about it.
 import asyncio
 import json
 import logging
+import time
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 import httpx
 
@@ -132,16 +133,29 @@ def analyze_github_profile(
         try:
             status_data = json.loads(raw_status)
             if status_data.get("status") == "processing":
-                return GitHubAnalyzeResponse(
-                    username=username,
-                    status="processing",
-                    message="Profile analysis is already in progress.",
-                )
+                start_time = status_data.get("timestamp", 0)
+                # If the task has been processing for less than 3 minutes, throttle it.
+                # Otherwise, assume it got stuck/interrupted and allow it to restart.
+                if time.time() - start_time < 180:
+                    return GitHubAnalyzeResponse(
+                        username=username,
+                        status="processing",
+                        message="Profile analysis is already in progress.",
+                    )
+                else:
+                    print(f"DEBUG: Auto-resetting stuck indexing task for {username} (was active for >3 minutes).", flush=True)
         except Exception:
             pass
             
     # Set status to processing and dispatch background task
-    redis_client.set(status_key, json.dumps({"status": "processing"}), ex=3600)
+    redis_client.set(
+        status_key,
+        json.dumps({
+            "status": "processing",
+            "timestamp": time.time()
+        }),
+        ex=3600
+    )
     background_tasks.add_task(run_indexing_task, username)
     
     return GitHubAnalyzeResponse(
