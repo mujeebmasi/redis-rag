@@ -36,7 +36,6 @@ from redis.commands.search.field import TextField, TagField, VectorField
 from redis.commands.search.index_definition import IndexDefinition, IndexType
 from redis.commands.search.query import Query
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
 
 from app.core.config import settings
 from app.core.redis_client import redis_client_raw
@@ -74,6 +73,7 @@ def _get_embeddings_model() -> HuggingFaceEmbeddings:
     """Create and cache the HuggingFace embedding model instance."""
     global _embeddings_model
     if _embeddings_model is None:
+        from langchain_huggingface import HuggingFaceEmbeddings
         _embeddings_model = HuggingFaceEmbeddings(
             model_name=settings.HF_EMBEDDING_MODEL,
             model_kwargs={"device": "cpu"},
