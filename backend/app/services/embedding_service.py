@@ -256,18 +256,23 @@ def embed_and_store(username: str, repositories: list[dict]) -> int:
             })
 
     if not chunks:
+        print("DEBUG: No chunks generated (no READMEs found or all empty).", flush=True)
         return 0
 
+    print(f"DEBUG: Chunking complete. Generated {len(chunks)} chunks from READMEs.", flush=True)
     # Step 4: Generate embeddings for all chunks (batched)
     embeddings_model = _get_embeddings_model()
     
     BATCH_SIZE = 32
     vectors = []
     
-    for i in range(0, len(chunks), BATCH_SIZE):
+    total_batches = (len(chunks) + BATCH_SIZE - 1) // BATCH_SIZE
+    for idx, i in enumerate(range(0, len(chunks), BATCH_SIZE)):
         batch = chunks[i:i + BATCH_SIZE]
+        print(f"DEBUG: Requesting embeddings for batch {idx + 1}/{total_batches} ({len(batch)} chunks)...", flush=True)
         batch_vectors = embeddings_model.embed_documents(batch)
         vectors.extend(batch_vectors)
+        print(f"DEBUG: Batch {idx + 1}/{total_batches} received successfully.", flush=True)
 
     # Step 5: Store each chunk in Redis as a Hash
     # Key format: doc:readme:{username}:{repo}:{index}

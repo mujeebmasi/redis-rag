@@ -44,17 +44,23 @@ def run_indexing_task(username: str):
     """
     status_key = f"status:analyze:{username}"
     try:
+        print(f"DEBUG: Background task started for user '{username}'", flush=True)
         # Step 1-3: Fetch profile and repositories concurrently
         result = asyncio.run(analyze_profile(username))
         
+        repos = result["repositories"]
+        print(f"DEBUG: GitHub fetch complete. Found {len(repos)} public repositories.", flush=True)
+        
         # Step 4: Generate embeddings and store in Redis Vector DB
+        print(f"DEBUG: Starting chunking and embedding generation...", flush=True)
         total_chunks = embed_and_store(
             username=username,
-            repositories=result["repositories"],
+            repositories=repos,
         )
+        print(f"DEBUG: Ingestion complete. Stored {total_chunks} chunks in Redis.", flush=True)
         
         # Calculate how many readmes were indexed
-        readmes_count = sum(1 for r in result["repositories"] if r["readme"])
+        readmes_count = sum(1 for r in repos if r["readme"])
         
         # Step 5: Construct complete response metadata and cache it
         profile = result["profile"]
