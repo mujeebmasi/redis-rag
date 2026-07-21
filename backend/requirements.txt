@@ -33,6 +33,8 @@ sentence-transformers
 langchain-groq
 langchain-text-splitters
 langchain-core
+langchain-google-genai
+
 
 # ── Numerical (for embeddings) ──────────────────────────────
 numpy
