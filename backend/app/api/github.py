@@ -29,7 +29,7 @@ from app.schemas.github import (
     GitHubStatusResponse,
     RepositoryInfo,
 )
-from app.services.embedding_service import embed_and_store
+from app.services.embedding_service import embed_and_store, log_to_redis
 from app.services.github_service import analyze_profile
 
 logger = logging.getLogger(__name__)
@@ -62,6 +62,7 @@ def run_indexing_task(username: str) -> None:
     - completed / failed: terminal states
     """
     status_key = f"status:analyze:{username}"
+    log_to_redis(username, f"Background task started for {username}. Initial status set.")
 
     try:
         # ── Phase 1: Fetch from GitHub ───────────────────────────
@@ -80,6 +81,7 @@ def run_indexing_task(username: str) -> None:
 
         repos = result["repositories"]
         indexable = [r for r in repos if r.get("readme") and r["readme"].strip()]
+        log_to_redis(username, f"GitHub fetch complete. Found {len(repos)} repos, {len(indexable)} have READMEs.")
         logger.info(
             f"GitHub fetch complete: {len(repos)} repos fetched, "
             f"{len(indexable)} have indexable READMEs."
@@ -185,12 +187,15 @@ def run_indexing_task(username: str) -> None:
         error_msg = f"GitHub API error: {e.response.status_code}"
         if e.response.status_code == 404:
             error_msg = f"GitHub user '{username}' not found."
+        log_to_redis(username, f"Task FAILED: {error_msg}")
         _update_status(
             status_key,
             {"status": "failed", "phase": "failed", "error": error_msg},
         )
 
-    except httpx.RequestError:
+    except httpx.RequestError as e:
+        error_msg = f"RequestError connecting to GitHub: {str(e)}"
+        log_to_redis(username, f"Task FAILED: {error_msg}")
         _update_status(
             status_key,
             {
@@ -201,6 +206,8 @@ def run_indexing_task(username: str) -> None:
         )
 
     except Exception as e:
+        error_msg = f"Unexpected error: {str(e)}"
+        log_to_redis(username, f"Task FAILED: {error_msg}")
         logger.exception(
             f"Unexpected error in background indexing for {username}: {e}"
         )

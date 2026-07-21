@@ -60,6 +60,17 @@ INDEX_NAME = "idx:github_readmes"  # RediSearch index name
 DOC_PREFIX = "doc:readme:"  # Key prefix for stored documents
 CACHE_PREFIX = "cache:embed:"  # Key prefix for SHA cache
 
+
+def log_to_redis(username: str, message: str) -> None:
+    """Helper to write log messages to a Redis list for remote debugging."""
+    try:
+        key = f"logs:analyze:{username.lower().strip()}"
+        redis_client.rpush(key, f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}")
+        redis_client.expire(key, 3600)
+    except Exception:
+        pass
+
+
 # ── Text Splitter (lazy-loaded) ──────────────────────────────────────
 
 _text_splitter = None
@@ -479,10 +490,14 @@ def embed_and_store(
 
     # Optional automatic vector garbage collection
     if SINGLE_USER_MODE:
+        log_to_redis(username, f"Single-User Mode: starting cleanup of other users...")
         cleanup_other_users_data(username)
+        log_to_redis(username, f"Cleanup complete.")
 
     # Step 1: Ensure the index exists
+    log_to_redis(username, f"Step 1: checking/recreating search index...")
     _create_index_if_not_exists()
+    log_to_redis(username, f"Search index is ready.")
 
     stats = {
         "total_chunks": 0,
@@ -497,9 +512,11 @@ def embed_and_store(
     ]
 
     if not indexable_repos:
+        log_to_redis(username, "No indexable READMEs found. Indexing aborted.")
         logger.info("No indexable READMEs found.")
         return stats
 
+    log_to_redis(username, f"Found {len(indexable_repos)} repos with indexable READMEs.")
     embeddings_model = _get_embeddings_model()
     total_repos = len(indexable_repos)
 
@@ -509,11 +526,14 @@ def embed_and_store(
         readme = repo["readme"]
         readme_sha = repo.get("readme_sha")
 
+        log_to_redis(username, f"[{repo_idx + 1}/{total_repos}] Processing repository: {repo_name}")
+
         # ── Cache Check ──────────────────────────────────────────
         if readme_sha:
             cached_sha = _get_cached_sha(username, repo_name)
             if cached_sha == readme_sha:
                 stats["repos_cached"] += 1
+                log_to_redis(username, f"[{repo_idx + 1}/{total_repos}] {repo_name}: Cache HIT (SHA unchanged). Skipping embedding.")
                 logger.info(
                     f"[{repo_idx + 1}/{total_repos}] {repo_name}: "
                     f"cache hit (SHA unchanged), skipping."
@@ -536,7 +556,10 @@ def embed_and_store(
 
         if not chunks:
             stats["repos_skipped"] += 1
+            log_to_redis(username, f"[{repo_idx + 1}/{total_repos}] {repo_name}: No text chunks generated. Skipping.")
             continue
+
+        log_to_redis(username, f"[{repo_idx + 1}/{total_repos}] {repo_name}: Split into {len(chunks)} chunks.")
 
         print(
             f"[{repo_idx + 1}/{total_repos}] {repo_name}: "
@@ -559,19 +582,21 @@ def embed_and_store(
         # ── Clean old vectors ────────────────────────────────────
         deleted = _delete_repo_vectors(username, repo_name)
         if deleted:
+            log_to_redis(username, f"[{repo_idx + 1}/{total_repos}] {repo_name}: Deleted {deleted} stale vectors.")
             print(f"Cleaned {deleted} old vectors for {repo_name}.", flush=True)
 
         # ── Embed (direct API batching) ─────────────────────────
-        # GoogleGenerativeAIEmbeddings natively batch-processes the list of texts
-        # in a single network call. ThreadPoolExecutor is not needed and avoided
-        # to prevent thread-safety/event-loop issues on Render.
+        log_to_redis(username, f"[{repo_idx + 1}/{total_repos}] {repo_name}: Sending {len(chunks)} chunks to Gemini embedding API...")
         try:
             vectors = embeddings_model.embed_documents(chunks)
+            log_to_redis(username, f"[{repo_idx + 1}/{total_repos}] {repo_name}: Received embedding vectors successfully (dim={len(vectors[0]) if vectors else 0}).")
         except Exception as embed_err:
+            log_to_redis(username, f"[{repo_idx + 1}/{total_repos}] {repo_name}: ERROR in embedding API: {embed_err}")
             print(f"ERROR: Failed to embed chunks for {repo_name}: {embed_err}", flush=True)
             raise embed_err
 
         # ── Store in Redis ───────────────────────────────────────
+        log_to_redis(username, f"[{repo_idx + 1}/{total_repos}] {repo_name}: Writing vectors to Redis...")
         pipeline = redis_client_raw.pipeline()
         for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
             key = f"{DOC_PREFIX}{username}:{repo_name}:{i}"
@@ -584,12 +609,12 @@ def embed_and_store(
                     "embedding": _vector_to_bytes(vector),
                 },
             )
-            # Flush in batches to avoid huge pipelines
             if (i + 1) % REDIS_PIPELINE_BATCH == 0:
                 pipeline.execute()
                 pipeline = redis_client_raw.pipeline()
 
         pipeline.execute()  # Flush remaining
+        log_to_redis(username, f"[{repo_idx + 1}/{total_repos}] {repo_name}: Finished storing vectors.")
 
         # ── Update cache ─────────────────────────────────────────
         if readme_sha:
@@ -604,6 +629,7 @@ def embed_and_store(
             flush=True
         )
 
+    log_to_redis(username, f"All repositories processed. Total chunks: {stats['total_chunks']}.")
     if progress_callback:
         progress_callback(
             "saving",
