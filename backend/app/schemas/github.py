@@ -45,8 +45,19 @@ class GitHubAnalyzeResponse(BaseModel):
 
 
 class GitHubStatusResponse(BaseModel):
-    """Status of the GitHub profile indexing task."""
+    """
+    Status of the GitHub profile indexing task.
+
+    Fields:
+    - status: "not_started" | "processing" | "completed" | "failed"
+    - phase: Current processing phase (queued, fetching, embedding, saving, completed, failed)
+    - progress: Granular progress info (repos_done, repos_total, chunks_done, current_repo, detail)
+    - error: Error message if status is "failed"
+    - profile: Full profile data if status is "completed"
+    """
     username: str
-    status: str  # "not_started", "processing", "completed", "failed"
+    status: str
+    phase: str | None = None
+    progress: dict | None = None
     error: str | None = None
     profile: GitHubProfileResponse | None = None

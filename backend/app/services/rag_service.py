@@ -133,7 +133,7 @@ def ask(username: str, question: str) -> dict:
 
             stored = embed_and_store(username=username, repositories=repos)
 
-            if stored > 0:
+            if stored.get("total_chunks", 0) > 0:
                 # Retry the semantic search after indexing
                 retrieved_docs = search_similar(
                     query=question,

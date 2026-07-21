@@ -4,8 +4,8 @@ GitHub API Routes
 Endpoints for analyzing GitHub profiles.
 
 Endpoints:
-    POST /github/analyze → Fetch a GitHub profile, extract READMEs,
-                           and store embeddings in Redis Vector DB
+    POST /github/analyze → Queue background indexing of a GitHub profile
+    GET  /github/status/{username} → Poll indexing progress
 
 This is the first step before chatting — you must analyze a profile
 before you can ask questions about it.
@@ -15,20 +15,22 @@ import asyncio
 import json
 import logging
 import time
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+
 import httpx
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 
 from app.core.auth import get_current_user
+from app.core.indexing_config import CACHE_TTL_SECONDS
 from app.core.redis_client import redis_client
 from app.schemas.github import (
     GitHubAnalyzeRequest,
-    GitHubProfileResponse,
     GitHubAnalyzeResponse,
+    GitHubProfileResponse,
     GitHubStatusResponse,
     RepositoryInfo,
 )
-from app.services.github_service import analyze_profile
 from app.services.embedding_service import embed_and_store
+from app.services.github_service import analyze_profile
 
 logger = logging.getLogger(__name__)
 
@@ -38,91 +40,184 @@ router = APIRouter(
 )
 
 
-def run_indexing_task(username: str):
+# ── Background Task ─────────────────────────────────────────────────
+
+
+def _update_status(status_key: str, data: dict, ttl: int = 3600) -> None:
+    """Safely write status JSON to Redis, swallowing errors."""
+    try:
+        redis_client.set(status_key, json.dumps(data), ex=ttl)
+    except Exception as e:
+        logger.error(f"Failed to write status to Redis: {e}")
+
+
+def run_indexing_task(username: str) -> None:
     """
     Background task to fetch details from GitHub and store embeddings in Redis.
-    Updates progress state under status:analyze:{username} in Redis.
+
+    Updates granular progress at each phase:
+    - fetching: downloading repos from GitHub
+    - embedding: per-repo chunking and vector generation
+    - saving: finalizing results
+    - completed / failed: terminal states
     """
     status_key = f"status:analyze:{username}"
+
     try:
-        print(f"DEBUG: Background task started for user '{username}'", flush=True)
-        # Step 1-3: Fetch profile and repositories concurrently
+        # ── Phase 1: Fetch from GitHub ───────────────────────────
+        _update_status(
+            status_key,
+            {
+                "status": "processing",
+                "phase": "fetching",
+                "progress": {"detail": "Fetching repositories from GitHub..."},
+                "timestamp": time.time(),
+            },
+        )
+
+        logger.info(f"Background indexing started for '{username}'")
         result = asyncio.run(analyze_profile(username))
-        
+
         repos = result["repositories"]
-        print(f"DEBUG: GitHub fetch complete. Found {len(repos)} public repositories.", flush=True)
-        
-        # Step 4: Generate embeddings and store in Redis Vector DB
-        print(f"DEBUG: Starting chunking and embedding generation...", flush=True)
-        total_chunks = embed_and_store(
+        indexable = [r for r in repos if r.get("readme") and r["readme"].strip()]
+        logger.info(
+            f"GitHub fetch complete: {len(repos)} repos fetched, "
+            f"{len(indexable)} have indexable READMEs."
+        )
+
+        _update_status(
+            status_key,
+            {
+                "status": "processing",
+                "phase": "embedding",
+                "progress": {
+                    "repos_total": len(indexable),
+                    "repos_done": 0,
+                    "chunks_done": 0,
+                    "detail": f"Fetched {len(repos)} repos, {len(indexable)} have READMEs",
+                },
+                "timestamp": time.time(),
+            },
+        )
+
+        # ── Phase 2: Embed and store ─────────────────────────────
+        def progress_callback(phase: str, detail: dict) -> None:
+            """Called by embed_and_store to report per-repo progress."""
+            _update_status(
+                status_key,
+                {
+                    "status": "processing",
+                    "phase": phase,
+                    "progress": detail,
+                    "timestamp": time.time(),
+                },
+            )
+
+        stats = embed_and_store(
             username=username,
             repositories=repos,
+            progress_callback=progress_callback,
         )
-        print(f"DEBUG: Ingestion complete. Stored {total_chunks} chunks in Redis.", flush=True)
-        
-        # Calculate how many readmes were indexed
-        readmes_count = sum(1 for r in repos if r["readme"])
-        
-        # Step 5: Construct complete response metadata and cache it
+
+        total_chunks = stats["total_chunks"]
+        repos_embedded = stats["repos_embedded"]
+        repos_cached = stats["repos_cached"]
+
+        # ── Phase 3: Build response metadata ─────────────────────
+        readmes_count = sum(1 for r in repos if r.get("readme"))
         profile = result["profile"]
+
         repositories = [
             RepositoryInfo(
                 name=repo["name"],
-                description=repo["description"],
-                language=repo["language"],
-                stars=repo["stars"],
-                forks=repo["forks"],
-                url=repo["url"],
-                has_readme=repo["readme"] is not None,
+                description=repo.get("description"),
+                language=repo.get("language"),
+                stars=repo.get("stars", 0),
+                forks=repo.get("forks", 0),
+                url=repo.get("url", ""),
+                has_readme=repo.get("readme") is not None,
             )
-            for repo in result["repositories"]
+            for repo in repos
         ]
-        
+
+        cache_detail = ""
+        if repos_cached > 0:
+            cache_detail = f" ({repos_cached} cached, {repos_embedded} newly embedded)"
+
         profile_data = GitHubProfileResponse(
             username=profile["username"],
-            name=profile["name"],
-            bio=profile["bio"],
-            avatar_url=profile["avatar_url"],
-            public_repos=profile["public_repos"],
-            followers=profile["followers"],
-            following=profile["following"],
+            name=profile.get("name"),
+            bio=profile.get("bio"),
+            avatar_url=profile.get("avatar_url"),
+            public_repos=profile.get("public_repos", 0),
+            followers=profile.get("followers", 0),
+            following=profile.get("following", 0),
             repositories=repositories,
             total_readmes_indexed=readmes_count,
-            message=f"Profile analyzed! {readmes_count} READMEs indexed ({total_chunks} chunks stored in vector DB).",
+            message=(
+                f"Profile analyzed! {readmes_count} READMEs indexed "
+                f"({total_chunks} chunks stored){cache_detail}."
+            ),
         )
-        
-        status_data = {
-            "status": "completed",
-            "profile": profile_data.model_dump(),
-        }
-        try:
-            redis_client.set(status_key, json.dumps(status_data), ex=86400)  # Cache completed task for 24h
-        except Exception as cache_err:
-            logger.error(f"Failed to cache status in Redis: {cache_err}")
-        
+
+        _update_status(
+            status_key,
+            {
+                "status": "completed",
+                "phase": "completed",
+                "progress": {
+                    "repos_embedded": repos_embedded,
+                    "repos_cached": repos_cached,
+                    "total_chunks": total_chunks,
+                },
+                "profile": profile_data.model_dump(),
+            },
+            ttl=CACHE_TTL_SECONDS,
+        )
+
+        logger.info(
+            f"Indexing complete for '{username}': "
+            f"{total_chunks} chunks, {repos_embedded} embedded, "
+            f"{repos_cached} cached."
+        )
+
     except httpx.HTTPStatusError as e:
         error_msg = f"GitHub API error: {e.response.status_code}"
         if e.response.status_code == 404:
             error_msg = f"GitHub user '{username}' not found."
-        try:
-            redis_client.set(status_key, json.dumps({"status": "failed", "error": error_msg}), ex=3600)
-        except Exception:
-            pass
+        _update_status(
+            status_key,
+            {"status": "failed", "phase": "failed", "error": error_msg},
+        )
+
     except httpx.RequestError:
-        error_msg = "Could not connect to GitHub API. Check connection."
-        try:
-            redis_client.set(status_key, json.dumps({"status": "failed", "error": error_msg}), ex=3600)
-        except Exception:
-            pass
+        _update_status(
+            status_key,
+            {
+                "status": "failed",
+                "phase": "failed",
+                "error": "Could not connect to GitHub API. Check connection.",
+            },
+        )
+
     except Exception as e:
-        logger.exception(f"Unexpected error in background indexing for {username}: {e}")
-        try:
-            redis_client.set(status_key, json.dumps({"status": "failed", "error": str(e)}), ex=3600)
-        except Exception:
-            pass
+        logger.exception(
+            f"Unexpected error in background indexing for {username}: {e}"
+        )
+        _update_status(
+            status_key,
+            {"status": "failed", "phase": "failed", "error": str(e)},
+        )
 
 
-@router.post("/analyze", response_model=GitHubAnalyzeResponse, status_code=status.HTTP_202_ACCEPTED)
+# ── Endpoints ────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/analyze",
+    response_model=GitHubAnalyzeResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 def analyze_github_profile(
     data: GitHubAnalyzeRequest,
     background_tasks: BackgroundTasks,
@@ -130,22 +225,25 @@ def analyze_github_profile(
 ):
     """
     Queue background task to analyze a GitHub profile and index its README files.
-    
+
     This is non-blocking and returns immediately with a status of 'processing'.
     The client should poll GET /github/status/{username} to see the status.
-    
+
     Requires: JWT Authentication (Bearer token)
     """
     username = data.username.lower().strip()
     status_key = f"status:analyze:{username}"
-    
+
     # Check if Redis is accessible
     try:
         raw_status = redis_client.get(status_key)
     except Exception as redis_err:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Redis database is unreachable: {str(redis_err)}. Please ensure Redis container is running.",
+            detail=(
+                f"Redis database is unreachable: {str(redis_err)}. "
+                "Please ensure Redis container is running."
+            ),
         )
 
     if raw_status:
@@ -153,8 +251,7 @@ def analyze_github_profile(
             status_data = json.loads(raw_status)
             if status_data.get("status") == "processing":
                 start_time = status_data.get("timestamp", 0)
-                # If the task has been processing for less than 30 seconds, throttle it.
-                # Otherwise, assume it got stuck/interrupted and allow it to restart.
+                # If processing for < 30s, don't restart
                 if time.time() - start_time < 30:
                     return GitHubAnalyzeResponse(
                         username=username,
@@ -162,28 +259,38 @@ def analyze_github_profile(
                         message="Profile analysis is already in progress.",
                     )
                 else:
-                    print(f"DEBUG: Auto-resetting stuck indexing task for {username} (was active for >30s).", flush=True)
+                    logger.info(
+                        f"Auto-resetting stuck task for {username} "
+                        f"(active > 30s)."
+                    )
         except Exception:
             pass
-            
+
     # Set status to processing and dispatch background task
     try:
         redis_client.set(
             status_key,
-            json.dumps({
-                "status": "processing",
-                "timestamp": time.time()
-            }),
-            ex=3600
+            json.dumps(
+                {
+                    "status": "processing",
+                    "phase": "queued",
+                    "progress": {"detail": "Task queued..."},
+                    "timestamp": time.time(),
+                }
+            ),
+            ex=3600,
         )
     except Exception as redis_err:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Redis database write error: {str(redis_err)}. Please ensure Redis container is running.",
+            detail=(
+                f"Redis database write error: {str(redis_err)}. "
+                "Please ensure Redis container is running."
+            ),
         )
 
     background_tasks.add_task(run_indexing_task, username)
-    
+
     return GitHubAnalyzeResponse(
         username=username,
         status="processing",
@@ -198,32 +305,39 @@ def get_analysis_status(
 ):
     """
     Get the status of the GitHub profile indexing task.
-    
+
     Status can be:
     - 'not_started': No task has been initiated for this username.
-    - 'processing': Ingestion task is currently running.
+    - 'processing': Ingestion task is currently running (check phase & progress).
     - 'completed': Vector DB is indexed and ready (returns profile metadata).
     - 'failed': Error occurred during fetching/embedding.
-    
+
     Requires: JWT Authentication (Bearer token)
     """
     username = username.lower().strip()
     status_key = f"status:analyze:{username}"
-    
-    raw_status = redis_client.get(status_key)
+
+    try:
+        raw_status = redis_client.get(status_key)
+    except Exception as redis_err:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Redis unreachable: {str(redis_err)}",
+        )
+
     if not raw_status:
         return GitHubStatusResponse(
             username=username,
             status="not_started",
-            error=None,
-            profile=None,
         )
-        
+
     try:
         status_data = json.loads(raw_status)
         return GitHubStatusResponse(
             username=username,
-            status=status_data.get("status"),
+            status=status_data.get("status", "unknown"),
+            phase=status_data.get("phase"),
+            progress=status_data.get("progress"),
             error=status_data.get("error"),
             profile=status_data.get("profile"),
         )

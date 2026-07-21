@@ -8,18 +8,18 @@ What is an Embedding?
 - Similar text → similar numbers → found by vector search
 - This is how "semantic search" works (searching by meaning, not keywords)
 
-Pipeline:
-1. Take README text from GitHub repos
-2. Split into smaller chunks (LLMs have context limits)
-3. Convert each chunk into an embedding vector
-4. Store vectors in Redis Vector Database
+Pipeline (optimized):
+1. For each repository:
+   a. Check SHA cache — skip if README hasn't changed
+   b. Clean old vectors for this repo
+   c. Chunk the README text
+   d. Generate embedding vectors (batched, with retry)
+   e. Store vectors in Redis
+   f. Update SHA cache
+   g. Report progress
 
-How Redis Vector Search Works (under the hood):
-- We create a RediSearch index with a VECTOR field
-- Each document is stored as a Redis Hash with the vector + metadata
-- When searching, Redis computes cosine similarity between query vector
-  and all stored vectors, returning the most similar ones
-- This is FAST — Redis does it in-memory
+This per-repo streaming approach keeps peak memory low and enables
+granular progress reporting.
 
 Note: We use redis-py directly instead of langchain-redis to avoid
 dependency conflicts with Python 3.14 and to show you how vector
@@ -27,71 +27,142 @@ search actually works at the Redis level.
 """
 
 import json
+import logging
 import os
-import httpx
 import re
-import struct
-import numpy as np
 import time
-import random
-from redis.commands.search.field import TextField, TagField, VectorField
+
+import httpx
+import numpy as np
+from redis.commands.search.field import TagField, TextField, VectorField
 from redis.commands.search.index_definition import IndexDefinition, IndexType
 from redis.commands.search.query import Query
+
 from app.core.config import settings
-from app.core.redis_client import redis_client_raw
+from app.core.indexing_config import (
+    CHUNK_OVERLAP,
+    CHUNK_SIZE,
+    EMBEDDING_API_TIMEOUT,
+    EMBEDDING_BATCH_SIZE,
+    EMBEDDING_MAX_RETRIES,
+    EMBEDDING_MAX_WORKERS,
+    REDIS_PIPELINE_BATCH,
+    REPO_CACHE_TTL_SECONDS,
+)
+from app.core.redis_client import redis_client, redis_client_raw
+
+logger = logging.getLogger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────────
 
-INDEX_NAME = "idx:github_readmes"     # RediSearch index name
-DOC_PREFIX = "doc:readme:"            # Key prefix for stored documents
+INDEX_NAME = "idx:github_readmes"  # RediSearch index name
+DOC_PREFIX = "doc:readme:"  # Key prefix for stored documents
+CACHE_PREFIX = "cache:embed:"  # Key prefix for SHA cache
+
+# ── Text Splitter (lazy-loaded) ──────────────────────────────────────
 
 _text_splitter = None
 
+
 def _get_text_splitter():
+    """Lazy-load the text splitter with configured chunk settings."""
     global _text_splitter
     if _text_splitter is None:
         from langchain_text_splitters import RecursiveCharacterTextSplitter
+
         _text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
+            chunk_size=CHUNK_SIZE,
+            chunk_overlap=CHUNK_OVERLAP,
         )
     return _text_splitter
 
 
 # ── Embedding Model ─────────────────────────────────────────────────
-# Converts text into vectors using a HuggingFace embedding model.
-# Defaults to sentence-transformers/all-MiniLM-L6-v2 (384 dimensions).
+
 
 class HuggingFaceAPIEmbeddings:
+    """
+    Embedding model that calls the HuggingFace Inference API.
+
+    Includes exponential backoff retry for transient failures
+    (503 model loading, 429 rate limit, timeouts).
+    """
+
     def __init__(self, model_name: str, hf_token: str | None = None):
         self.model_name = model_name
         self.hf_token = hf_token
-        self.api_url = f"https://router.huggingface.co/hf-inference/models/{model_name}/pipeline/feature-extraction"
+        self.api_url = (
+            f"https://router.huggingface.co/hf-inference/models/"
+            f"{model_name}/pipeline/feature-extraction"
+        )
 
-    def _embed(self, texts: list[str]) -> list[list[float]]:
+    def _embed_with_retry(self, texts: list[str]) -> list[list[float]]:
+        """
+        Call the HuggingFace API with exponential backoff retry.
+
+        Retries on:
+        - 503 Service Unavailable (model loading)
+        - 429 Too Many Requests (rate limited)
+        - Timeouts
+        - Connection errors
+        """
         headers = {}
         if self.hf_token:
             headers["Authorization"] = f"Bearer {self.hf_token}"
-        try:
-            response = httpx.post(
-                self.api_url,
-                headers=headers,
-                json={"inputs": texts, "options": {"wait_for_model": True}},
-                timeout=30.0
-            )
-            response.raise_for_status()
-            result = response.json()
-            if isinstance(result, list) and len(result) > 0:
-                return result
-            raise ValueError(f"Unexpected API response: {result}")
-        except Exception as e:
-            raise RuntimeError(f"HuggingFace Inference API error: {str(e)}")
+
+        last_error = None
+        for attempt in range(1, EMBEDDING_MAX_RETRIES + 1):
+            try:
+                response = httpx.post(
+                    self.api_url,
+                    headers=headers,
+                    json={
+                        "inputs": texts,
+                        "options": {"wait_for_model": True},
+                    },
+                    timeout=EMBEDDING_API_TIMEOUT,
+                )
+                response.raise_for_status()
+                result = response.json()
+                if isinstance(result, list) and len(result) > 0:
+                    return result
+                raise ValueError(f"Unexpected API response: {result}")
+
+            except (
+                httpx.HTTPStatusError,
+                httpx.TimeoutException,
+                httpx.ConnectError,
+            ) as e:
+                last_error = e
+                # Only retry on transient errors
+                if isinstance(e, httpx.HTTPStatusError):
+                    if e.response.status_code not in (429, 503):
+                        raise  # Non-retryable error
+
+                wait = 2**attempt  # 2s, 4s, 8s
+                logger.warning(
+                    f"Embedding API attempt {attempt}/{EMBEDDING_MAX_RETRIES} "
+                    f"failed: {e}. Retrying in {wait}s..."
+                )
+                time.sleep(wait)
+
+            except Exception as e:
+                raise RuntimeError(
+                    f"HuggingFace Inference API error: {str(e)}"
+                )
+
+        raise RuntimeError(
+            f"Embedding API failed after {EMBEDDING_MAX_RETRIES} retries: "
+            f"{last_error}"
+        )
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return self._embed(texts)
+        """Embed a list of documents with retry logic."""
+        return self._embed_with_retry(texts)
 
     def embed_query(self, text: str) -> list[float]:
-        return self._embed([text])[0]
+        """Embed a single query string with retry logic."""
+        return self._embed_with_retry([text])[0]
 
 
 _embeddings_model = None
@@ -109,6 +180,7 @@ def _get_embeddings_model():
             )
         else:
             from langchain_huggingface import HuggingFaceEmbeddings
+
             _embeddings_model = HuggingFaceEmbeddings(
                 model_name=settings.HF_EMBEDDING_MODEL,
                 model_kwargs={"device": "cpu"},
@@ -120,19 +192,16 @@ def _get_vector_dim() -> int:
     """Gets the embedding vector dimension dynamically."""
     model = _get_embeddings_model()
     try:
-        # Standard sentence-transformers client method
         return model.client.get_sentence_embedding_dimension()
     except Exception:
-        # Fallback by embedding a test query
         return len(model.embed_query("test"))
 
 
 def _vector_to_bytes(vector: list[float]) -> bytes:
     """
     Convert a list of floats to bytes for Redis storage.
-    
+
     Redis stores vectors as raw bytes (32-bit floats).
-    struct.pack converts Python floats → C-style binary format.
     """
     return np.array(vector, dtype=np.float32).tobytes()
 
@@ -144,24 +213,17 @@ def _create_index_if_not_exists() -> None:
     """
     Create the RediSearch vector index if it doesn't already exist.
     If the index exists but has a different dimension, recreate it.
-    
-    The index defines:
-    - content (TEXT): the actual text chunk (searchable by keywords too)
-    - username (TAG): GitHub username (for filtering by user)
-    - repo_name (TAG): repository name (for filtering by repo)
-    - embedding (VECTOR): the embedding vector (for similarity search)
-    
-    FLAT algorithm: brute-force search (fine for < 100K vectors)
-    COSINE distance: measures angle between vectors (standard for text)
     """
     vector_dim = _get_vector_dim()
     try:
         info = redis_client_raw.ft(INDEX_NAME).info()
-        # Check current index dimension to handle model swaps seamlessly
         attributes = info.get("attributes", [])
         current_dim = None
         for attr in attributes:
-            attr_strs = [x.decode("utf-8") if isinstance(x, bytes) else str(x) for x in attr]
+            attr_strs = [
+                x.decode("utf-8") if isinstance(x, bytes) else str(x)
+                for x in attr
+            ]
             if "embedding" in attr_strs and "dim" in attr_strs:
                 try:
                     dim_idx = attr_strs.index("dim")
@@ -169,34 +231,35 @@ def _create_index_if_not_exists() -> None:
                 except (ValueError, IndexError):
                     pass
                 break
-        
+
         if current_dim is not None and current_dim != vector_dim:
-            print(f"Dimension mismatch in Redis index (found {current_dim}, expected {vector_dim}). Recreating index...")
+            logger.warning(
+                f"Dimension mismatch in Redis index "
+                f"(found {current_dim}, expected {vector_dim}). "
+                f"Recreating index..."
+            )
             redis_client_raw.ft(INDEX_NAME).dropindex(delete_documents=True)
         else:
-            return  # Index exists and dimension matches, nothing to do
+            return  # Index exists and dimension matches
 
     except Exception:
-        # Index doesn't exist — create it
-        pass
+        pass  # Index doesn't exist — create it
 
-    # Define the index schema
     schema = (
         TextField("content"),
         TagField("username"),
         TagField("repo_name"),
         VectorField(
             "embedding",
-            "FLAT",                      # Algorithm: FLAT = brute force (simple, accurate)
+            "FLAT",
             {
-                "TYPE": "FLOAT32",       # 32-bit floating point
-                "DIM": vector_dim,       # dimensions dynamically fetched
-                "DISTANCE_METRIC": "COSINE",  # Cosine similarity
+                "TYPE": "FLOAT32",
+                "DIM": vector_dim,
+                "DISTANCE_METRIC": "COSINE",
             },
         ),
     )
 
-    # Create the index on all keys starting with DOC_PREFIX
     definition = IndexDefinition(
         prefix=[DOC_PREFIX],
         index_type=IndexType.HASH,
@@ -206,130 +269,280 @@ def _create_index_if_not_exists() -> None:
         fields=schema,
         definition=definition,
     )
+    logger.info(f"Created RediSearch index '{INDEX_NAME}' (dim={vector_dim})")
 
 
-# ── Store Embeddings ─────────────────────────────────────────────────
+# ── SHA Cache ────────────────────────────────────────────────────────
 
 
-def embed_and_store(username: str, repositories: list[dict]) -> int:
+def _get_repo_cache_key(username: str, repo_name: str) -> str:
+    """Build the Redis key for a repo's embedding cache."""
+    return f"{CACHE_PREFIX}{username}:{repo_name}"
+
+
+def _get_cached_sha(username: str, repo_name: str) -> str | None:
+    """
+    Check if a repo's README has already been embedded.
+
+    Returns the cached SHA if it exists, otherwise None.
+    """
+    try:
+        cached = redis_client.get(_get_repo_cache_key(username, repo_name))
+        if cached:
+            data = json.loads(cached)
+            return data.get("sha")
+    except Exception:
+        pass
+    return None
+
+
+def _set_repo_cache(
+    username: str, repo_name: str, sha: str, chunk_count: int
+) -> None:
+    """Store the SHA and chunk count for a repo's embedded README."""
+    try:
+        redis_client.set(
+            _get_repo_cache_key(username, repo_name),
+            json.dumps(
+                {
+                    "sha": sha,
+                    "chunk_count": chunk_count,
+                    "timestamp": time.time(),
+                }
+            ),
+            ex=REPO_CACHE_TTL_SECONDS,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to set cache for {repo_name}: {e}")
+
+
+# ── Old Vector Cleanup ───────────────────────────────────────────────
+
+
+def _delete_repo_vectors(username: str, repo_name: str) -> int:
+    """
+    Delete all existing vectors for a specific repo.
+
+    This prevents stale vectors from accumulating when READMEs change.
+    Returns the number of keys deleted.
+    """
+    pattern = f"{DOC_PREFIX}{username}:{repo_name}:*"
+    keys = redis_client_raw.keys(pattern)
+    if keys:
+        redis_client_raw.delete(*keys)
+    return len(keys)
+
+
+# ── Store Embeddings (Per-Repo Streaming) ────────────────────────────
+
+
+def embed_and_store(
+    username: str,
+    repositories: list[dict],
+    progress_callback=None,
+) -> dict:
     """
     Process GitHub repositories and store their README embeddings in Redis.
-    
-    Steps:
-    1. Create the RediSearch index (if it doesn't exist)
-    2. Filter repos that have README content
-    3. Split each README into chunks
-    4. Generate embedding vectors for all chunks
-    5. Store each chunk as a Redis Hash with vector + metadata
-    
+
+    Optimized pipeline:
+    - Processes repos one at a time (low memory)
+    - Checks SHA cache to skip unchanged repos
+    - Cleans old vectors before re-embedding
+    - Batches embedding API calls
+    - Reports granular progress via callback
+
     Args:
         username: GitHub username (stored as metadata for filtering)
         repositories: List of repo dicts from github_service.analyze_profile()
-                     Each repo should have: name, readme (str or None)
-    
+                     Each repo should have: name, readme, readme_sha
+        progress_callback: Optional callable(phase, detail_dict) for progress
+
     Returns:
-        int: Number of chunks stored in Redis
+        dict: {
+            "total_chunks": int,
+            "repos_embedded": int,
+            "repos_cached": int,
+            "repos_skipped": int,
+        }
     """
+    from concurrent.futures import ThreadPoolExecutor
 
     # Step 1: Ensure the index exists
     _create_index_if_not_exists()
 
-    # Step 2-3: Collect all chunks with metadata
-    chunks = []       # The text content
-    metadata = []     # Associated metadata (username, repo_name)
+    stats = {
+        "total_chunks": 0,
+        "repos_embedded": 0,
+        "repos_cached": 0,
+        "repos_skipped": 0,
+    }
 
-    for repo in repositories:
-        readme = repo.get("readme")
+    # Filter to repos that have README content
+    indexable_repos = [
+        r for r in repositories if r.get("readme") and r["readme"].strip()
+    ]
 
-        # Skip repos without README
-        if not readme or not readme.strip():
+    if not indexable_repos:
+        logger.info("No indexable READMEs found.")
+        return stats
+
+    embeddings_model = _get_embeddings_model()
+    total_repos = len(indexable_repos)
+
+    # Step 2: Process each repo individually (streaming)
+    for repo_idx, repo in enumerate(indexable_repos):
+        repo_name = repo["name"]
+        readme = repo["readme"]
+        readme_sha = repo.get("readme_sha")
+
+        # ── Cache Check ──────────────────────────────────────────
+        if readme_sha:
+            cached_sha = _get_cached_sha(username, repo_name)
+            if cached_sha == readme_sha:
+                stats["repos_cached"] += 1
+                logger.info(
+                    f"[{repo_idx + 1}/{total_repos}] {repo_name}: "
+                    f"cache hit (SHA unchanged), skipping."
+                )
+                if progress_callback:
+                    progress_callback(
+                        "embedding",
+                        {
+                            "current_repo": repo_name,
+                            "repos_done": repo_idx + 1,
+                            "repos_total": total_repos,
+                            "chunks_done": stats["total_chunks"],
+                            "detail": "cached",
+                        },
+                    )
+                continue
+
+        # ── Chunk ────────────────────────────────────────────────
+        chunks = _get_text_splitter().split_text(readme)
+
+        if not chunks:
+            stats["repos_skipped"] += 1
             continue
 
-        # Split README into chunks
-        repo_chunks = _get_text_splitter().split_text(readme)
+        logger.info(
+            f"[{repo_idx + 1}/{total_repos}] {repo_name}: "
+            f"{len(chunks)} chunks to embed."
+        )
 
-        for chunk in repo_chunks:
-            chunks.append(chunk)
-            metadata.append({
-                "username": username,
-                "repo_name": repo["name"],
-            })
+        if progress_callback:
+            progress_callback(
+                "embedding",
+                {
+                    "current_repo": repo_name,
+                    "repos_done": repo_idx,
+                    "repos_total": total_repos,
+                    "chunks_done": stats["total_chunks"],
+                    "detail": f"embedding {len(chunks)} chunks",
+                },
+            )
 
-    if not chunks:
-        print("DEBUG: No chunks generated (no READMEs found or all empty).", flush=True)
-        return 0
+        # ── Clean old vectors ────────────────────────────────────
+        deleted = _delete_repo_vectors(username, repo_name)
+        if deleted:
+            logger.debug(
+                f"Cleaned {deleted} old vectors for {repo_name}."
+            )
 
-    from concurrent.futures import ThreadPoolExecutor
+        # ── Embed (batched + parallel) ───────────────────────────
+        batches = [
+            chunks[i : i + EMBEDDING_BATCH_SIZE]
+            for i in range(0, len(chunks), EMBEDDING_BATCH_SIZE)
+        ]
 
-    print(f"DEBUG: Chunking complete. Generated {len(chunks)} chunks from READMEs.", flush=True)
-    # Step 4: Generate embeddings for all chunks in parallel batches
-    BATCH_SIZE = 16
-    batches = [chunks[i:i + BATCH_SIZE] for i in range(0, len(chunks), BATCH_SIZE)]
+        def _embed_batch(batch_text):
+            return embeddings_model.embed_documents(batch_text)
 
-    def _embed_batch(batch_text):
-        model = _get_embeddings_model()
-        return model.embed_documents(batch_text)
+        with ThreadPoolExecutor(
+            max_workers=min(EMBEDDING_MAX_WORKERS, len(batches))
+        ) as executor:
+            batch_results = list(executor.map(_embed_batch, batches))
 
-    print(f"DEBUG: Requesting embeddings for {len(chunks)} chunks across {len(batches)} parallel batches...", flush=True)
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        batch_results = list(executor.map(_embed_batch, batches))
+        vectors = [vec for b_vecs in batch_results for vec in b_vecs]
 
-    vectors = [vec for b_vecs in batch_results for vec in b_vecs]
-    print(f"DEBUG: Successfully generated {len(vectors)} embedding vectors.", flush=True)
+        # ── Store in Redis ───────────────────────────────────────
+        pipeline = redis_client_raw.pipeline()
+        for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
+            key = f"{DOC_PREFIX}{username}:{repo_name}:{i}"
+            pipeline.hset(
+                key,
+                mapping={
+                    "content": chunk,
+                    "username": username,
+                    "repo_name": repo_name,
+                    "embedding": _vector_to_bytes(vector),
+                },
+            )
+            # Flush in batches to avoid huge pipelines
+            if (i + 1) % REDIS_PIPELINE_BATCH == 0:
+                pipeline.execute()
+                pipeline = redis_client_raw.pipeline()
 
-    # Step 5: Store each chunk in Redis as a Hash
-    # Key format: doc:readme:{username}:{repo}:{index}
-    pipeline = redis_client_raw.pipeline()
+        pipeline.execute()  # Flush remaining
 
-    for i, (chunk, meta, vector) in enumerate(zip(chunks, metadata, vectors)):
-        key = f"{DOC_PREFIX}{meta['username']}:{meta['repo_name']}:{i}"
+        # ── Update cache ─────────────────────────────────────────
+        if readme_sha:
+            _set_repo_cache(username, repo_name, readme_sha, len(chunks))
 
-        pipeline.hset(
-            key,
-            mapping={
-                "content": chunk,
-                "username": meta["username"],
-                "repo_name": meta["repo_name"],
-                "embedding": _vector_to_bytes(vector),
+        stats["total_chunks"] += len(chunks)
+        stats["repos_embedded"] += 1
+
+        logger.info(
+            f"[{repo_idx + 1}/{total_repos}] {repo_name}: "
+            f"stored {len(chunks)} chunks."
+        )
+
+    if progress_callback:
+        progress_callback(
+            "saving",
+            {
+                "repos_done": total_repos,
+                "repos_total": total_repos,
+                "chunks_done": stats["total_chunks"],
+                "detail": "complete",
             },
         )
 
-    pipeline.execute()
+    logger.info(
+        f"Indexing complete: {stats['repos_embedded']} embedded, "
+        f"{stats['repos_cached']} cached, "
+        f"{stats['repos_skipped']} skipped, "
+        f"{stats['total_chunks']} total chunks."
+    )
 
-    return len(chunks)
+    return stats
 
 
 # ── Search ───────────────────────────────────────────────────────────
 
 
-def search_similar(query: str, username: str, top_k: int = 5) -> list[dict]:
+def search_similar(
+    query: str, username: str, top_k: int = 5
+) -> list[dict]:
     """
     Find the most similar README chunks to a query using vector search.
-    
+
     Steps:
     1. Convert query text → embedding vector
     2. Run Redis vector similarity search (KNN)
     3. Return top_k most similar chunks with metadata
-    
+
     The Redis query uses:
     - KNN (K-Nearest Neighbors): find the K closest vectors
     - @username filter: only search this user's repos
     - COSINE distance: lower = more similar
-    
+
     Args:
         query: The search query (natural language)
         username: GitHub username to filter by
         top_k: Number of results to return
-    
+
     Returns:
-        List of dicts: [
-            {
-                "content": "chunk text...",
-                "repo_name": "repo-name",
-                "score": 0.85  (similarity score)
-            },
-            ...
-        ]
+        List of dicts with content, repo_name, and score
     """
 
     # Step 1: Ensure index exists
@@ -341,17 +554,18 @@ def search_similar(query: str, username: str, top_k: int = 5) -> list[dict]:
     query_bytes = _vector_to_bytes(query_vector)
 
     # Step 3: Build and run the Redis vector search query
-    # Syntax: (@username:{username})=>[KNN 5 @embedding $vec AS score]
-    # This says: "filter by username, then find 5 nearest vectors, call the distance 'score'"
-    # RediSearch tags require escaping of special characters like hyphens.
-    # We use a single-pass regex replacement to avoid double-escaping the backslash.
-    escaped_username = re.sub(r"([,./\-+*?^$()[\]{}|\\:!@#%&=<>])", r"\\\1", username)
+    escaped_username = re.sub(
+        r"([,./\-+*?^$()[\]{}|\\:!@#%&=<>])", r"\\\1", username
+    )
 
     redis_query = (
-        Query(f"(@username:{{{escaped_username}}})=>[KNN {top_k} @embedding $vec AS score]")
+        Query(
+            f"(@username:{{{escaped_username}}})=>"
+            f"[KNN {top_k} @embedding $vec AS score]"
+        )
         .sort_by("score")
         .return_fields("content", "repo_name", "score")
-        .dialect(2)  # Required for vector search
+        .dialect(2)
     )
 
     results = redis_client_raw.ft(INDEX_NAME).search(
@@ -360,14 +574,12 @@ def search_similar(query: str, username: str, top_k: int = 5) -> list[dict]:
     )
 
     # Step 4: Format results
-    # Note: redis_client_raw has decode_responses=False, so fields come back as bytes
     documents = []
     for doc in results.docs:
         content = doc.content
         repo_name = doc.repo_name
         score = doc.score
 
-        # Decode bytes → str if needed (raw client returns bytes)
         if isinstance(content, bytes):
             content = content.decode("utf-8")
         if isinstance(repo_name, bytes):
@@ -375,10 +587,12 @@ def search_similar(query: str, username: str, top_k: int = 5) -> list[dict]:
         if isinstance(score, bytes):
             score = score.decode("utf-8")
 
-        documents.append({
-            "content": content,
-            "repo_name": repo_name,
-            "score": float(score),
-        })
+        documents.append(
+            {
+                "content": content,
+                "repo_name": repo_name,
+                "score": float(score),
+            }
+        )
 
     return documents
