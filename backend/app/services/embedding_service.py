@@ -487,9 +487,10 @@ def embed_and_store(
             stats["repos_skipped"] += 1
             continue
 
-        logger.info(
+        print(
             f"[{repo_idx + 1}/{total_repos}] {repo_name}: "
-            f"{len(chunks)} chunks to embed."
+            f"{len(chunks)} chunks to embed.",
+            flush=True
         )
 
         if progress_callback:
@@ -507,25 +508,17 @@ def embed_and_store(
         # ── Clean old vectors ────────────────────────────────────
         deleted = _delete_repo_vectors(username, repo_name)
         if deleted:
-            logger.debug(
-                f"Cleaned {deleted} old vectors for {repo_name}."
-            )
+            print(f"Cleaned {deleted} old vectors for {repo_name}.", flush=True)
 
-        # ── Embed (batched + parallel) ───────────────────────────
-        batches = [
-            chunks[i : i + EMBEDDING_BATCH_SIZE]
-            for i in range(0, len(chunks), EMBEDDING_BATCH_SIZE)
-        ]
-
-        def _embed_batch(batch_text):
-            return embeddings_model.embed_documents(batch_text)
-
-        with ThreadPoolExecutor(
-            max_workers=min(EMBEDDING_MAX_WORKERS, len(batches))
-        ) as executor:
-            batch_results = list(executor.map(_embed_batch, batches))
-
-        vectors = [vec for b_vecs in batch_results for vec in b_vecs]
+        # ── Embed (direct API batching) ─────────────────────────
+        # GoogleGenerativeAIEmbeddings natively batch-processes the list of texts
+        # in a single network call. ThreadPoolExecutor is not needed and avoided
+        # to prevent thread-safety/event-loop issues on Render.
+        try:
+            vectors = embeddings_model.embed_documents(chunks)
+        except Exception as embed_err:
+            print(f"ERROR: Failed to embed chunks for {repo_name}: {embed_err}", flush=True)
+            raise embed_err
 
         # ── Store in Redis ───────────────────────────────────────
         pipeline = redis_client_raw.pipeline()
@@ -554,9 +547,10 @@ def embed_and_store(
         stats["total_chunks"] += len(chunks)
         stats["repos_embedded"] += 1
 
-        logger.info(
+        print(
             f"[{repo_idx + 1}/{total_repos}] {repo_name}: "
-            f"stored {len(chunks)} chunks."
+            f"stored {len(chunks)} chunks.",
+            flush=True
         )
 
     if progress_callback:
