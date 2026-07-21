@@ -170,13 +170,11 @@ _embeddings_model = None
 
 
 def _get_embeddings_model():
-    """Create and cache the HuggingFace embedding model instance."""
+    """Create and cache the embedding model instance."""
     global _embeddings_model
     if _embeddings_model is None:
-        token = settings.HUGGINGFACEHUB_API_TOKEN or settings.HF_TOKEN
-        # To strictly enforce 512MB RAM constraints on Render/production,
-        # we DEFAULT to the lightweight cloud-based API Embeddings.
-        # Local CPU embeddings are ONLY loaded if LOCAL_EMBEDDING=true is explicitly configured.
+        # Default to Google Gemini Embeddings (ultra-fast, 3072 dims, no cold starts)
+        # Fall back to local CPU model ONLY if LOCAL_EMBEDDING=true is set.
         if os.getenv("LOCAL_EMBEDDING") == "true":
             logger.info("LOCAL_EMBEDDING is true. Initializing heavy local HuggingFace embeddings on CPU...")
             from langchain_huggingface import HuggingFaceEmbeddings
@@ -186,10 +184,12 @@ def _get_embeddings_model():
                 model_kwargs={"device": "cpu"},
             )
         else:
-            logger.info("Using lightweight HuggingFace Cloud API Embeddings (prevents PyTorch OOM).")
-            _embeddings_model = HuggingFaceAPIEmbeddings(
-                model_name=settings.HF_EMBEDDING_MODEL,
-                hf_token=token,
+            logger.info("Using ultra-fast Google Gemini Embeddings (models/gemini-embedding-001).")
+            from langchain_google_genai import GoogleGenerativeAIEmbeddings
+
+            _embeddings_model = GoogleGenerativeAIEmbeddings(
+                model="models/gemini-embedding-001",
+                google_api_key=settings.GOOGLE_API_KEY,
             )
     return _embeddings_model
 
