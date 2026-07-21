@@ -342,3 +342,199 @@ An embedding model converts text into a high-dimensional vector of floating-poin
 
 ### In-Memory Vector Search
 Redis Stack utilizes the RediSearch module to build indexes on Vector fields within stored Redis Hashes. It performs K-Nearest Neighbors (KNN) searches directly in memory, calculating the similarity score between a query vector and the index in fractions of a millisecond.
+
+---
+
+## Deployment Debugging Chronicle
+
+This section documents every production bug encountered while deploying RedisRAG to **Render** (backend) and **Vercel** (frontend), the exact root causes, and the solutions applied. Written as a reference for future deployments.
+
+### Problem 1: Google GenAI SDK Deadlock on Render (GCP Metadata Server Hang)
+
+**Symptom**: The background indexing task would hang indefinitely at `repos_done: 0` on Render. Locally, the same code completed in under 15 seconds. No error was thrown, no timeout fired — the process simply froze.
+
+**Root Cause**: Google's official Python SDKs (`google-genai` and `langchain-google-genai`) include an **Application Default Credentials (ADC)** lookup at initialization. This feature detects whether the code is running inside Google Cloud Platform by sending HTTP requests to the **GCP Instance Metadata Server** at `http://169.254.169.254`. Since Render runs on AWS/GCP infrastructure but is _not_ a native GCP environment, these metadata requests never receive a response. The SDK blocks the thread waiting for a response, with internal timeouts of **2+ minutes per attempt** and multiple retries.
+
+**Solution**: Replaced the `GoogleGenerativeAIEmbeddings` (from `langchain-google-genai`) with a custom `GeminiAPIEmbeddings` class that makes **direct REST API calls** to the Google Gemini endpoint using `httpx`:
+
+```python
+class GeminiAPIEmbeddings:
+    """Direct REST client — bypasses SDK credential detection entirely."""
+
+    def embed_documents(self, texts):
+        response = httpx.post(
+            f"https://generativelanguage.googleapis.com/v1beta/{model}:batchEmbedContents?key={api_key}",
+            json={"requests": [...]},
+            timeout=30.0
+        )
+        return [e["values"] for e in response.json()["embeddings"]]
+```
+
+**Key Takeaway**: Never use Google's official Python SDKs on non-GCP cloud platforms for latency-sensitive background tasks. Direct REST calls are faster, lighter, and eliminate the metadata server deadlock entirely.
+
+---
+
+### Problem 2: `langchain_text_splitters` Import Freeze Under CPU Starvation
+
+**Symptom**: The diagnostic Redis logs showed the background task reached `[1/8] Processing repository: advanced-whale-optimization-algorithm` but never advanced to `Split into X chunks`. The task appeared permanently frozen.
+
+**Root Cause**: The text splitter was **lazy-imported** inside the function:
+```python
+def _get_text_splitter():
+    from langchain_text_splitters import RecursiveCharacterTextSplitter  # 4+ second import
+```
+
+Importing `langchain_text_splitters` triggers a chain of heavy imports (LangChain core, Pydantic validators, regex engines). Locally this takes ~4 seconds, but on **Render's Free Tier (0.1 CPU core)**, under a simultaneous polling storm of 9–12 HTTP requests per second from the frontend, the background thread was **starved of CPU time**. The import never completed because the main thread consumed all available CPU cycles responding to status polling requests.
+
+**Solution**: Replaced the entire `langchain_text_splitters` dependency with a **zero-dependency, pure-Python recursive text splitter** defined inline:
+
+```python
+def _split_text(text: str, chunk_size=None, chunk_overlap=None) -> list[str]:
+    separators = ["\n\n", "\n", ". ", "! ", "? ", "; ", ", ", " ", ""]
+    # ... recursive splitting logic with overlap
+```
+
+This function requires zero imports, runs in microseconds, and produces equivalent chunking output.
+
+**Key Takeaway**: On resource-constrained containers, every `import` statement is a potential freeze point. Replace heavy library imports with lightweight inline implementations wherever possible.
+
+---
+
+### Problem 3: Frontend Polling Storm Starving Backend CPU
+
+**Symptom**: Render logs showed the backend receiving 9–12 `GET /github/status/{username}` requests **per second** while the background indexing task was supposedly running. The task never made progress.
+
+**Root Cause**: The React frontend used a fixed `setInterval(checkStatus, 2000)` (every 2 seconds) for status polling. However, modern browsers **throttle background tabs** to poll only once per minute. When the user switched back to the browser tab, all throttled timers fired simultaneously, creating a burst of requests. Combined with React Strict Mode (which double-mounts effects in development), and possible multiple open tabs, the Render server was overwhelmed.
+
+On Render's Free Tier (0.1 CPU), handling 9+ HTTP requests/second consumed 100% of the available CPU, leaving **zero cycles for the background indexing thread** (which needs CPU for text splitting, HTTP calls to Gemini, and Redis writes).
+
+**Solution**: Replaced fixed-interval polling with **exponential backoff**:
+
+```typescript
+// Polling interval: 2s → 4s → 6s → 8s → 10s (capped)
+const getInterval = () => Math.min(2000 + pollCount * 2000, 10000);
+
+let timeoutId: ReturnType<typeof setTimeout>;
+const scheduleNext = () => {
+    pollCount++;
+    timeoutId = setTimeout(async () => {
+        await checkStatus();
+        scheduleNext();
+    }, getInterval());
+};
+```
+
+This reduces steady-state polling to 1 request every 10 seconds instead of 1 every 2 seconds — an **80% reduction** in server load.
+
+**Key Takeaway**: Never use fixed-interval polling against a resource-constrained backend. Always implement exponential backoff or server-sent events (SSE).
+
+---
+
+### Problem 4: Stale Redis Status Keys After Container Restarts
+
+**Symptom**: After deploying a new version on Render, the user refreshed the frontend and saw a permanent loading spinner. The "Analyze" button was disabled and unclickable. No `POST /github/analyze` request appeared in the Render logs.
+
+**Root Cause**: When Render restarts the container for a new deployment, the running background task is **killed instantly** without any cleanup. The Redis key `status:analyze:{username}` remains stuck at `"status": "processing"` because the task never got to update it to `"failed"` or `"completed"`. When the new container boots and the frontend polls the status, it sees `"processing"` and stays in the loading state indefinitely, **disabling the Analyze button** in the UI.
+
+**Solution**: The status keys have a 1-hour TTL (`ex=3600`), so they eventually expire. For immediate recovery, the stuck key can be deleted manually:
+
+```python
+redis_client.delete("status:analyze:{username}")
+```
+
+A future improvement would be to add a **startup cleanup hook** in FastAPI's lifespan that detects and clears any orphaned `"processing"` status keys when the server boots.
+
+**Key Takeaway**: Background tasks on ephemeral containers must be designed for abrupt termination. Use TTLs on all status keys, and consider startup-time cleanup of orphaned state.
+
+---
+
+### Problem 5: Vercel Frontend Not Connecting to Render Backend
+
+**Symptom**: The user deployed the frontend on Vercel and backend on Render separately. Clicking "Analyze" did nothing — no request appeared in the Render logs.
+
+**Root Cause**: The frontend API base URL was configured as:
+```typescript
+const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+```
+
+Without setting the `VITE_API_URL` environment variable in Vercel's dashboard, the production build defaulted to `http://localhost:8000`, causing all API calls to target the user's local machine instead of the deployed Render backend.
+
+**Solution**: Added `VITE_API_URL=https://redis-rag.onrender.com` as an environment variable in Vercel's project settings, then triggered a **redeployment** (required because Vite embeds environment variables at build time, not runtime).
+
+**Key Takeaway**: Vite environment variables (`VITE_*`) are embedded at **build time**, not runtime. After changing them in the hosting dashboard, you must trigger a full rebuild/redeployment.
+
+---
+
+### Problem 6: Remote Debugging Without Access to Server Logs
+
+**Symptom**: We needed to see exactly which line of code the Render server was executing, but the Render dashboard logs scrolled away quickly and the user couldn't always provide timely screenshots.
+
+**Root Cause**: Standard `print()` and `logger.info()` output only appears in the Render dashboard log viewer, which has limited scrollback and no programmatic access.
+
+**Solution**: Implemented a **`log_to_redis()` helper** that writes timestamped diagnostic messages directly to a Redis list:
+
+```python
+def log_to_redis(username: str, message: str) -> None:
+    key = f"logs:analyze:{username}"
+    redis_client.rpush(key, f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}")
+    redis_client.expire(key, 3600)
+```
+
+This allowed us to query the server's execution trace in real-time from any machine:
+```python
+redis_client.lrange("logs:analyze:mujeebmasi", 0, -1)
+```
+
+**Key Takeaway**: When debugging deployed services without direct log access, use your existing database (Redis, PostgreSQL) as a diagnostic log sink. It's faster and more reliable than coordinating screenshots.
+
+---
+
+## Important Things to Keep in Mind
+
+A collection of best practices, optimal methods, and lessons learned from building and deploying this application. Use this as a checklist for any similar Python/FastAPI + React deployment.
+
+### Embedding & AI API Best Practices
+
+| Practice | Why |
+|---|---|
+| **Use direct REST API calls** instead of official SDKs for embedding models | SDKs include cloud-detection logic that deadlocks on non-native platforms (e.g., Google GenAI SDK on Render). Direct `httpx` calls with explicit timeouts are faster, lighter, and predictable. |
+| **Always set explicit timeouts** on all HTTP calls | Use `timeout=30.0` on every `httpx.post()` call. Without timeouts, a single hung API call can freeze the entire background task forever. |
+| **Batch embedding requests** using `batchEmbedContents` | A single batch request for 5 chunks is ~5x faster than 5 individual requests due to reduced network round-trips and API overhead. |
+| **Cache embeddings by content hash (SHA)** | Store the Git SHA of each README alongside its embeddings. On re-analysis, compare SHAs first — if unchanged, skip the entire embed-and-store cycle. Re-runs complete in under 1 second. |
+
+### Free-Tier Cloud Deployment (Render, Railway, Fly.io)
+
+| Practice | Why |
+|---|---|
+| **Eliminate heavy imports** (`langchain`, `torch`, `transformers`) | On a 0.1 CPU core, importing PyTorch alone takes 10–30 seconds and consumes 400MB+ RAM. Replace with lightweight alternatives or API calls. |
+| **Never use fixed-interval polling** from the frontend | Use exponential backoff (2s → 4s → 8s → 10s). Fixed 2-second polling floods the server and starves background tasks of CPU. |
+| **Design background tasks for abrupt termination** | Containers restart without warning on deploys. Use TTLs on all Redis status keys. Add startup cleanup hooks to clear orphaned `"processing"` states. |
+| **Monitor memory usage** | Free tiers typically cap at 512MB. If your app approaches this limit, the platform silently throttles CPU or force-restarts the container with no error message. |
+| **Use `print(..., flush=True)`** for log visibility | On Render, Python's stdout is block-buffered by default. Without `flush=True`, print statements may never appear in the dashboard logs. |
+
+### Frontend-Backend Deployment
+
+| Practice | Why |
+|---|---|
+| **Set `VITE_API_URL` in your hosting dashboard** | Vite embeds env vars at build time. If not set, the frontend defaults to `localhost:8000` and all API calls silently fail in production. |
+| **Redeploy after changing env vars** | Changing a Vite environment variable in Vercel/Netlify requires a full rebuild. The old JavaScript bundle still contains the previous value until rebuilt. |
+| **Use exponential backoff for status polling** | Prevents CPU starvation on free-tier backends and avoids browser tab throttling artifacts. |
+| **Handle stale UI state after server restarts** | If the backend restarts mid-task, the frontend may be stuck showing a loading spinner. Consider adding a "force re-analyze" button or auto-detecting stale states (e.g., if status hasn't changed for 60 seconds, show a retry option). |
+
+### Redis & Database
+
+| Practice | Why |
+|---|---|
+| **Always use TTLs on ephemeral keys** | Status keys, OTP codes, and diagnostic logs should all expire. Without TTLs, orphaned keys accumulate and consume memory on free-tier Redis instances. |
+| **Use `log_to_redis()` for remote debugging** | When you can't access server logs directly, write diagnostic checkpoints to a Redis list. Query them from any machine connected to the same Redis instance. |
+| **Single-User Mode for free-tier Redis** | Free Redis instances have ~30MB limits. Enable `SINGLE_USER_MODE=True` to automatically purge previous users' vectors when a new profile is analyzed. |
+| **Use `connect_timeout` on database connections** | Serverless databases (like Neon) have cold starts. Without a timeout, a sleeping database can block your entire FastAPI startup indefinitely. |
+
+### General Python Backend
+
+| Practice | Why |
+|---|---|
+| **Replace lazy imports with zero-dependency alternatives** | Lazy-loading only delays the freeze — it doesn't prevent it. Under CPU starvation, a 4-second import can block for minutes. Pure-Python implementations with no imports are always instant. |
+| **Use `asyncio.run()` carefully in background threads** | `asyncio.run()` creates a new event loop and closes it. This is safe in a background thread but must not be called from an existing async context. |
+| **Log exceptions to persistent storage** | `logger.exception()` only writes to stdout, which may be lost on container restarts. Write critical errors to Redis or PostgreSQL so they survive restarts and can be queried later. |
+| **Test the deployed endpoint directly** | Don't rely solely on the frontend. Use `httpx` or `curl` to call your deployed API endpoints directly to isolate whether issues are frontend or backend. |
