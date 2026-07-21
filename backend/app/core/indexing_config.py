@@ -36,3 +36,5 @@ EMBEDDING_MAX_RETRIES: int = 3     # Retry attempts for transient failures
 REDIS_PIPELINE_BATCH: int = 100    # Hashes per Redis pipeline flush
 CACHE_TTL_SECONDS: int = 86400     # 24h TTL for completed analysis cache
 REPO_CACHE_TTL_SECONDS: int = 86400  # 24h TTL for per-repo SHA cache
+SINGLE_USER_MODE: bool = True      # If True, cleans up other users' data when indexing a new user
+

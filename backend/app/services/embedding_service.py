@@ -48,6 +48,7 @@ from app.core.indexing_config import (
     EMBEDDING_MAX_WORKERS,
     REDIS_PIPELINE_BATCH,
     REPO_CACHE_TTL_SECONDS,
+    SINGLE_USER_MODE,
 )
 from app.core.redis_client import redis_client, redis_client_raw
 
@@ -338,6 +339,59 @@ def _delete_repo_vectors(username: str, repo_name: str) -> int:
     return len(keys)
 
 
+def cleanup_other_users_data(active_username: str) -> int:
+    """
+    Deletes all vectors, SHA caches, and analysis statuses for all users
+    OTHER than the current active_username.
+
+    This keeps the Redis database footprint extremely small.
+    """
+    # 1. Clear other users' documents
+    # Find all keys starting with doc:readme:
+    all_doc_keys = redis_client_raw.keys(f"{DOC_PREFIX}*")
+    keys_to_delete = []
+    for key in all_doc_keys:
+        try:
+            key_str = key.decode("utf-8")
+            # Key format: doc:readme:{username}:{repo}:{index}
+            parts = key_str.split(":")
+            if len(parts) >= 4:
+                username = parts[2]
+                if username.lower() != active_username.lower():
+                    keys_to_delete.append(key)
+        except Exception:
+            pass
+
+    # 2. Clear other users' cache keys and status keys
+    all_cache_keys = redis_client.keys(f"{CACHE_PREFIX}*")
+    for key in all_cache_keys:
+        # Key format: cache:embed:{username}:{repo}
+        parts = key.split(":")
+        if len(parts) >= 3:
+            username = parts[2]
+            if username.lower() != active_username.lower():
+                keys_to_delete.append(key)
+
+    all_status_keys = redis_client.keys("status:analyze:*")
+    for key in all_status_keys:
+        # Key format: status:analyze:{username}
+        parts = key.split(":")
+        if len(parts) >= 3:
+            username = parts[2]
+            if username.lower() != active_username.lower():
+                keys_to_delete.append(key)
+
+    if keys_to_delete:
+        # Both client connection formats connect to the same Redis instance
+        redis_client_raw.delete(*keys_to_delete)
+        logger.info(
+            f"Single-User Mode: Cleaned up {len(keys_to_delete)} Redis keys "
+            f"for other users."
+        )
+        return len(keys_to_delete)
+    return 0
+
+
 # ── Store Embeddings (Per-Repo Streaming) ────────────────────────────
 
 
@@ -371,6 +425,10 @@ def embed_and_store(
         }
     """
     from concurrent.futures import ThreadPoolExecutor
+
+    # Optional automatic vector garbage collection
+    if SINGLE_USER_MODE:
+        cleanup_other_users_data(username)
 
     # Step 1: Ensure the index exists
     _create_index_if_not_exists()

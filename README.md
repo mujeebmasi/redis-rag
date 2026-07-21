@@ -327,6 +327,7 @@ graph TD
 * **Granular Status & Phase Tracking**: The API endpoint updates progress metrics into Redis throughout ingestion. Clients polling `/github/status/{username}` receive structured JSON detailing the current execution phase (`fetching`, `embedding`, `saving`, `completed`) along with exact statistics on chunks written, repos completed, and cache hits.
 * **Robust Hugging Face API Fallbacks & Retries**: When calling the external Hugging Face Inference API for vector extraction, transient network failures (like HTTP 503 model-loading warmups or HTTP 429 rate-limits) are caught and automatically retried using exponential backoff (up to 3 times: 2s → 4s → 8s).
 * **Stale Vector Garbage Collection**: To prevent vector pollution when a README's layout or chunk count changes, the pipeline locates and deletes any legacy Redis search records (`doc:readme:{username}:{repo}:*`) prior to inserting new ones.
+* **Single-User Mode (Redis Memory Cap)**: If `SINGLE_USER_MODE = True` is configured in `indexing_config.py`, indexing a new user automatically sweeps Redis and purges vectors, SHA caches, and status logs belonging to any other user. This guarantees the Redis instance remains small, clean, and runs safely within free-tier resource bounds.
 
 ---
 
