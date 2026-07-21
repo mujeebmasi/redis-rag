@@ -291,7 +291,45 @@ Standard outbound SMTP connections (port 465) to Gmail are typically blocked by 
 - We integrated the **Resend Email API** via `httpx` POST requests (port 443/HTTPS), which are never blocked by cloud firewalls.
 - We added a fallback sequence: if a `RESEND_API_KEY` is present, it routes the OTP verification mail through Resend's API. If not, it falls back to the local Gmail SMTP configuration, and if both fail/are unconfigured, it logs the generated OTP directly to the container console logs for easy debugging.
 
+### 7. High-Performance Indexing Pipeline & Caching (Claude Optimization)
+When chunking and embedding generation are run synchronously for dozens of repositories, ingestion becomes a major bottleneck. Under resource-constrained production settings (like Render's Free Tier), this frequently triggers timeout limits or triggers OOM (Out of Memory) crash terminations.
+
+Using the Claude agent, we refactored the entire indexing pipeline with 7 key performance enhancements:
+
+```mermaid
+graph TD
+    Request[POST /github/analyze] --> Fetch[1. Fetch Profile & Repositories]
+    Fetch --> RankFilter[2. Filter & Rank Repositories]
+    RankFilter --> LoopStart[3. Stream Selected Repositories]
+    
+    subgraph Stream["Per-Repository Processing Loop"]
+        LoopStart --> CacheCheck{4. Check SHA Cache in Redis}
+        CacheCheck -->|Match| CacheHit[5. Skip & Report Cached]
+        CacheCheck -->|Mismatch| Cleanup[6. Delete Stale Vectors]
+        Cleanup --> Chunk[7. Chunk README Text]
+        Chunk --> Embed[8. Embed Batch with Retry]
+        Embed --> PipelineWrite[9. Write to Redis Pipeline]
+        PipelineWrite --> CacheUpdate[10. Cache README SHA]
+    end
+    
+    CacheHit --> NextRepo[11. Move to Next Repo]
+    CacheUpdate --> NextRepo
+    NextRepo --> Complete[12. Complete & Cache Final Metadata]
+    
+    style CacheHit fill:#d4edda,stroke:#28a745,stroke-width:1px
+    style Embed fill:#f8d7da,stroke:#dc3545,stroke-width:1px
+```
+
+* **Smart Repository Filtering & Ranking**: Instead of wasting compute resources embedding low-value forks or archived projects, the system ranks repositories based on a popularity score (`stars + forks`). It restricts ingestion to the top `MAX_REPOS_TO_INDEX` (default 15) and skips repos with empty or boilerplate READMEs shorter than `MIN_README_LENGTH` characters.
+* **SHA-Based Incremental Caching**: To prevent redundant embedding generation, the system saves the Git file SHA for each indexed README inside Redis (`cache:embed:{username}:{repo}`). On subsequent ingestion requests, the system compares latest SHA values; if matching, it skips chunking and model calls completely. Re-runs finish in **under 1 second** instead of minutes.
+* **Per-Repository Streaming (Memory Capping)**: Instead of buffering all chunks from all repositories in memory before storage, the pipeline streams repositories sequentially. Chunks are generated, embedded, and flushed to Redis on a per-repo basis, capping peak memory usage to `O(single_repo)` rather than `O(all_repos)`.
+* **Configurable Tuning Parameters**: All ingestion thresholds are controlled through a centralized config module ([indexing_config.py](file:///d:/AI/redisrag/backend/app/core/indexing_config.py)), enabling fast adjustments of batch sizes, worker counts, timeouts, chunk overlaps, and ingestion limits.
+* **Granular Status & Phase Tracking**: The API endpoint updates progress metrics into Redis throughout ingestion. Clients polling `/github/status/{username}` receive structured JSON detailing the current execution phase (`fetching`, `embedding`, `saving`, `completed`) along with exact statistics on chunks written, repos completed, and cache hits.
+* **Robust Hugging Face API Fallbacks & Retries**: When calling the external Hugging Face Inference API for vector extraction, transient network failures (like HTTP 503 model-loading warmups or HTTP 429 rate-limits) are caught and automatically retried using exponential backoff (up to 3 times: 2s → 4s → 8s).
+* **Stale Vector Garbage Collection**: To prevent vector pollution when a README's layout or chunk count changes, the pipeline locates and deletes any legacy Redis search records (`doc:readme:{username}:{repo}:*`) prior to inserting new ones.
+
 ---
+
 
 ## Key Technical Concepts
 
