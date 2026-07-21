@@ -173,17 +173,22 @@ def _get_embeddings_model():
     global _embeddings_model
     if _embeddings_model is None:
         token = settings.HUGGINGFACEHUB_API_TOKEN or settings.HF_TOKEN
-        if os.getenv("RENDER") == "true" or token:
-            _embeddings_model = HuggingFaceAPIEmbeddings(
-                model_name=settings.HF_EMBEDDING_MODEL,
-                hf_token=token,
-            )
-        else:
+        # To strictly enforce 512MB RAM constraints on Render/production,
+        # we DEFAULT to the lightweight cloud-based API Embeddings.
+        # Local CPU embeddings are ONLY loaded if LOCAL_EMBEDDING=true is explicitly configured.
+        if os.getenv("LOCAL_EMBEDDING") == "true":
+            logger.info("LOCAL_EMBEDDING is true. Initializing heavy local HuggingFace embeddings on CPU...")
             from langchain_huggingface import HuggingFaceEmbeddings
 
             _embeddings_model = HuggingFaceEmbeddings(
                 model_name=settings.HF_EMBEDDING_MODEL,
                 model_kwargs={"device": "cpu"},
+            )
+        else:
+            logger.info("Using lightweight HuggingFace Cloud API Embeddings (prevents PyTorch OOM).")
+            _embeddings_model = HuggingFaceAPIEmbeddings(
+                model_name=settings.HF_EMBEDDING_MODEL,
+                hf_token=token,
             )
     return _embeddings_model
 
