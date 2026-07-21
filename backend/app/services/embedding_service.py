@@ -259,20 +259,23 @@ def embed_and_store(username: str, repositories: list[dict]) -> int:
         print("DEBUG: No chunks generated (no READMEs found or all empty).", flush=True)
         return 0
 
+    from concurrent.futures import ThreadPoolExecutor
+
     print(f"DEBUG: Chunking complete. Generated {len(chunks)} chunks from READMEs.", flush=True)
-    # Step 4: Generate embeddings for all chunks (batched)
-    embeddings_model = _get_embeddings_model()
-    
-    BATCH_SIZE = 32
-    vectors = []
-    
-    total_batches = (len(chunks) + BATCH_SIZE - 1) // BATCH_SIZE
-    for idx, i in enumerate(range(0, len(chunks), BATCH_SIZE)):
-        batch = chunks[i:i + BATCH_SIZE]
-        print(f"DEBUG: Requesting embeddings for batch {idx + 1}/{total_batches} ({len(batch)} chunks)...", flush=True)
-        batch_vectors = embeddings_model.embed_documents(batch)
-        vectors.extend(batch_vectors)
-        print(f"DEBUG: Batch {idx + 1}/{total_batches} received successfully.", flush=True)
+    # Step 4: Generate embeddings for all chunks in parallel batches
+    BATCH_SIZE = 16
+    batches = [chunks[i:i + BATCH_SIZE] for i in range(0, len(chunks), BATCH_SIZE)]
+
+    def _embed_batch(batch_text):
+        model = _get_embeddings_model()
+        return model.embed_documents(batch_text)
+
+    print(f"DEBUG: Requesting embeddings for {len(chunks)} chunks across {len(batches)} parallel batches...", flush=True)
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        batch_results = list(executor.map(_embed_batch, batches))
+
+    vectors = [vec for b_vecs in batch_results for vec in b_vecs]
+    print(f"DEBUG: Successfully generated {len(vectors)} embedding vectors.", flush=True)
 
     # Step 5: Store each chunk in Redis as a Hash
     # Key format: doc:readme:{username}:{repo}:{index}

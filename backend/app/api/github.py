@@ -95,19 +95,31 @@ def run_indexing_task(username: str):
             "status": "completed",
             "profile": profile_data.model_dump(),
         }
-        redis_client.set(status_key, json.dumps(status_data), ex=86400)  # Cache completed task for 24h
+        try:
+            redis_client.set(status_key, json.dumps(status_data), ex=86400)  # Cache completed task for 24h
+        except Exception as cache_err:
+            logger.error(f"Failed to cache status in Redis: {cache_err}")
         
     except httpx.HTTPStatusError as e:
         error_msg = f"GitHub API error: {e.response.status_code}"
         if e.response.status_code == 404:
             error_msg = f"GitHub user '{username}' not found."
-        redis_client.set(status_key, json.dumps({"status": "failed", "error": error_msg}), ex=3600)
+        try:
+            redis_client.set(status_key, json.dumps({"status": "failed", "error": error_msg}), ex=3600)
+        except Exception:
+            pass
     except httpx.RequestError:
         error_msg = "Could not connect to GitHub API. Check connection."
-        redis_client.set(status_key, json.dumps({"status": "failed", "error": error_msg}), ex=3600)
+        try:
+            redis_client.set(status_key, json.dumps({"status": "failed", "error": error_msg}), ex=3600)
+        except Exception:
+            pass
     except Exception as e:
         logger.exception(f"Unexpected error in background indexing for {username}: {e}")
-        redis_client.set(status_key, json.dumps({"status": "failed", "error": str(e)}), ex=3600)
+        try:
+            redis_client.set(status_key, json.dumps({"status": "failed", "error": str(e)}), ex=3600)
+        except Exception:
+            pass
 
 
 @router.post("/analyze", response_model=GitHubAnalyzeResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -127,35 +139,49 @@ def analyze_github_profile(
     username = data.username.lower().strip()
     status_key = f"status:analyze:{username}"
     
-    # Check if a task is already processing
-    raw_status = redis_client.get(status_key)
+    # Check if Redis is accessible
+    try:
+        raw_status = redis_client.get(status_key)
+    except Exception as redis_err:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Redis database is unreachable: {str(redis_err)}. Please ensure Redis container is running.",
+        )
+
     if raw_status:
         try:
             status_data = json.loads(raw_status)
             if status_data.get("status") == "processing":
                 start_time = status_data.get("timestamp", 0)
-                # If the task has been processing for less than 3 minutes, throttle it.
+                # If the task has been processing for less than 30 seconds, throttle it.
                 # Otherwise, assume it got stuck/interrupted and allow it to restart.
-                if time.time() - start_time < 180:
+                if time.time() - start_time < 30:
                     return GitHubAnalyzeResponse(
                         username=username,
                         status="processing",
                         message="Profile analysis is already in progress.",
                     )
                 else:
-                    print(f"DEBUG: Auto-resetting stuck indexing task for {username} (was active for >3 minutes).", flush=True)
+                    print(f"DEBUG: Auto-resetting stuck indexing task for {username} (was active for >30s).", flush=True)
         except Exception:
             pass
             
     # Set status to processing and dispatch background task
-    redis_client.set(
-        status_key,
-        json.dumps({
-            "status": "processing",
-            "timestamp": time.time()
-        }),
-        ex=3600
-    )
+    try:
+        redis_client.set(
+            status_key,
+            json.dumps({
+                "status": "processing",
+                "timestamp": time.time()
+            }),
+            ex=3600
+        )
+    except Exception as redis_err:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Redis database write error: {str(redis_err)}. Please ensure Redis container is running.",
+        )
+
     background_tasks.add_task(run_indexing_task, username)
     
     return GitHubAnalyzeResponse(
