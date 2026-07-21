@@ -17,11 +17,13 @@ export const DashboardWorkspace: React.FC<DashboardWorkspaceProps> = ({ userEmai
   const [profile, setProfile] = useState<GitHubProfileResponse | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // Poll status when "processing"
+  // Poll status when "processing" — uses exponential backoff to avoid CPU starvation
   useEffect(() => {
     if (!activeUsername || indexingStatus !== 'processing') return;
 
     let isSubscribed = true;
+    let pollCount = 0;
+
     const checkStatus = async () => {
       try {
         const response = await api.getStatus(activeUsername);
@@ -36,18 +38,30 @@ export const DashboardWorkspace: React.FC<DashboardWorkspaceProps> = ({ userEmai
         }
       } catch (err: any) {
         if (!isSubscribed) return;
-        // Don't stop polling on single request fail, it could be temporary network glitch
         console.error("Status polling failed:", err);
       }
     };
 
-    // Poll every 2 seconds
-    const intervalId = setInterval(checkStatus, 2000);
-    checkStatus(); // Check immediately on mount/update
+    // Exponential backoff: 2s, 4s, 6s, 8s... capped at 10s
+    // This prevents hammering the free-tier server with too many requests
+    const getInterval = () => Math.min(2000 + pollCount * 2000, 10000);
+
+    let timeoutId: ReturnType<typeof setTimeout>;
+    const scheduleNext = () => {
+      if (!isSubscribed) return;
+      pollCount++;
+      timeoutId = setTimeout(async () => {
+        await checkStatus();
+        scheduleNext();
+      }, getInterval());
+    };
+
+    checkStatus(); // Check immediately
+    scheduleNext();
 
     return () => {
       isSubscribed = false;
-      clearInterval(intervalId);
+      clearTimeout(timeoutId);
     };
   }, [activeUsername, indexingStatus]);
 

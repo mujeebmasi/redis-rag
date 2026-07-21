@@ -71,22 +71,73 @@ def log_to_redis(username: str, message: str) -> None:
         pass
 
 
-# ── Text Splitter (lazy-loaded) ──────────────────────────────────────
+# ── Text Splitter ────────────────────────────────────────────────────
 
-_text_splitter = None
+def _split_text(text: str, chunk_size: int = None, chunk_overlap: int = None) -> list[str]:
+    """
+    Fast, zero-dependency recursive text splitter.
+
+    Splits text by paragraphs first, then sentences, then words.
+    No external imports — instant startup, no CPU cost.
+    """
+    if chunk_size is None:
+        chunk_size = CHUNK_SIZE
+    if chunk_overlap is None:
+        chunk_overlap = CHUNK_OVERLAP
+
+    if not text or not text.strip():
+        return []
+
+    separators = ["\n\n", "\n", ". ", "! ", "? ", "; ", ", ", " ", ""]
+
+    def _split(text: str, seps: list[str]) -> list[str]:
+        if not seps:
+            # Split by character as last resort
+            return [text[i:i+chunk_size] for i in range(0, len(text), chunk_size - chunk_overlap)]
+        sep = seps[0]
+        if sep == "":
+            return [text[i:i+chunk_size] for i in range(0, len(text), chunk_size - chunk_overlap)]
+        parts = text.split(sep)
+        chunks = []
+        current = ""
+        for part in parts:
+            candidate = current + (sep if current else "") + part
+            if len(candidate) <= chunk_size:
+                current = candidate
+            else:
+                if current:
+                    chunks.append(current)
+                if len(part) > chunk_size:
+                    # Recursively split the oversized part
+                    chunks.extend(_split(part, seps[1:]))
+                    current = ""
+                else:
+                    current = part
+        if current:
+            chunks.append(current)
+        return chunks
+
+    raw_chunks = _split(text.strip(), separators)
+
+    # Add overlap between consecutive chunks
+    if chunk_overlap <= 0 or len(raw_chunks) <= 1:
+        return [c for c in raw_chunks if c.strip()]
+
+    overlapped = []
+    for i, chunk in enumerate(raw_chunks):
+        if i == 0:
+            overlapped.append(chunk)
+        else:
+            # Prepend tail of previous chunk as context
+            prev = raw_chunks[i - 1]
+            tail = prev[-chunk_overlap:] if len(prev) > chunk_overlap else prev
+            overlapped.append(tail + " " + chunk)
+    return [c for c in overlapped if c.strip()]
 
 
 def _get_text_splitter():
-    """Lazy-load the text splitter with configured chunk settings."""
-    global _text_splitter
-    if _text_splitter is None:
-        from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-        _text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=CHUNK_SIZE,
-            chunk_overlap=CHUNK_OVERLAP,
-        )
-    return _text_splitter
+    """Returns the fast built-in text splitter (kept for API compatibility)."""
+    return type('_Splitter', (), {'split_text': staticmethod(_split_text)})()
 
 
 # ── Embedding Model ─────────────────────────────────────────────────
