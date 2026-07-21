@@ -1,70 +1,118 @@
-# The Deployed Server Rant: What Went Wrong and How It Was Solved
+# The Complete Rant: 17 Problems We Encountered and How We Solved Them
 
-If you are reading this, it means we spent hours fighting mysterious freezes, endless loading spinners, and silent failures while trying to deploy a simple FastAPI + React RAG app to the cloud.
-
-This document chronicles the absolute chaos of the last 3 days of debugging, where everything worked perfectly locally, but died silently the moment it touched the internet. 
+This document serves as an exhaustive chronicle of every single bug, crash, bottleneck, architectural failure, and deployment trap we fought during the development and deployment of **RedisRAG** (FastAPI + React + Redis Vector DB + Render + Vercel).
 
 ---
 
-## 1. The "Invisible Env Var" Incident (Render side)
+## Index of 17 Failures
 
-### The Mistake
-We switched the default embedding model to Google Gemini to make profile ingestion lightning-fast (from 5 minutes down to 10 seconds). We tested it, pushed it, and... it hung indefinitely. 
-
-### Why It Failed
-The Gemini model requires a `GOOGLE_API_KEY`. It was sitting nicely in the local `.env` file, but **it was completely missing from the Render Environment settings**. 
-
-Instead of throwing a clear "API Key Missing" exception, the codebase at the time was trying to import and initialize the heavy HuggingFace/PyTorch libraries as a fallback, causing the server to hit Render's 512MB RAM limit and throttle down to near-zero CPU cycles, freezing the request forever.
-
-### The Fix
-1. Get a free Gemini key from Google AI Studio.
-2. Go to **Render Dashboard** -> **redis-rag Web Service** -> **Environment**.
-3. Add `GOOGLE_API_KEY` with the correct key value.
-4. Redeploy the backend.
-
----
-
-## 2. The Vercel "Silent Host" Incident (Frontend side)
-
-### The Mistake
-The frontend was deployed on Vercel, and the backend was on Render. We opened the Vercel app, typed a username, clicked "Analyze", and... absolutely nothing happened. No network requests in the Render dashboard, no logs, nothing.
-
-### Why It Failed
-Vite compiles and packages React applications into static HTML/JS files. At runtime in the browser, the frontend has no idea where the backend is unless it's explicitly told. 
-
-In `api.ts`, we wrote:
-```typescript
-const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-```
-Since `VITE_API_URL` was not set in Vercel's environment variables, Vercel built the frontend to call `http://localhost:8000`. The browser was trying to send requests to the user's local machine instead of the deployed backend on Render!
-
-### The Fix
-1. Go to **Vercel Dashboard** -> **Project Settings** -> **Environment Variables**.
-2. Add `VITE_API_URL` with the value `https://redis-rag.onrender.com` (no trailing slash).
-3. **Crucial Step**: Go to Vercel's Deployments tab, click the three dots on the latest deployment, and select **Redeploy**. (Because Vite embeds variables during build time, simply adding the variable does nothing until you trigger a rebuild).
+1. [PostgreSQL Cold-Start Startup Deadlock](#1-postgresql-cold-start-startup-deadlock)
+2. [Heavy PyTorch / SentenceTransformers Out-Of-Memory (OOM) Crashes](#2-heavy-pytorch--sentencetransformers-out-of-memory-oom-crashes)
+3. [Gmail SMTP Port 465 Firewall Block on Render](#3-gmail-smtp-port-465-firewall-block-on-render)
+4. [FastAPI CORS Middleware Wildcard Credentials Conflict](#4-fastapi-cors-middleware-wildcard-credentials-conflict)
+5. [GitHub API Base64 README Unicode Decoding Crashes](#5-github-api-base64-readme-unicode-decoding-crashes)
+6. [Ingestion Slowdowns from Junk / Forked / Low-Quality Repos](#6-ingestion-slowdowns-from-junk--forked--low-quality-repos)
+7. [Redundant Vector Embedding Generation (No SHA Caching)](#7-redundant-vector-embedding-generation-no-sha-caching)
+8. [Memory Spikes from Buffering All Repository Chunks](#8-memory-spikes-from-buffering-all-repository-chunks)
+9. [Free Redis Storage Memory Exhaustion (30MB Limit)](#9-free-redis-storage-memory-exhaustion-30mb-limit)
+10. [Google GenAI SDK Metadata Server Deadlock on Non-GCP Hosting](#10-google-genai-sdk-metadata-server-deadlock-on-non-gcp-hosting)
+11. [Missing Production Environment Variables on Render (`GOOGLE_API_KEY`)](#11-missing-production-environment-variables-on-render-google_api_key)
+12. [Vite Frontend Defaulting to `localhost:8000` in Production](#12-vite-frontend-defaulting-to-localhost8000-in-production)
+13. [Forgetting to Rebuild Vercel After Adding Environment Variables](#13-forgetting-to-rebuild-vercel-after-adding-environment-variables)
+14. [Frontend Polling Storm Starving Background Worker CPU](#14-frontend-polling-storm-starving-background-worker-cpu)
+15. [LangChain `RecursiveCharacterTextSplitter` Heavy Import Freeze](#15-langchain-recursivecharactertextsplitter-heavy-import-freeze)
+16. [Orphaned "Processing" Redis Status Keys After Container Restarts](#16-orphaned-processing-redis-status-keys-after-container-restarts)
+17. [Black-Box Background Debugging on Ephemeral Containers](#17-black-box-background-debugging-on-ephemeral-containers)
 
 ---
 
-## 3. The "Infinite Spinner" / Polling Storm Starvation
+## Detailed Breakdowns
 
-### The Mistake
-We refreshed the browser, clicked "Analyze", and saw the loading spinner. It stayed at `analyzing...` for 10 minutes. The logs showed the server was receiving 10 requests per second.
+### 1. PostgreSQL Cold-Start Startup Deadlock
+* **The Failure**: FastAPI runs `Base.metadata.create_all(bind=engine)` inside the lifespan event. When connected to serverless PostgreSQL (Neon), cold starts meant the initial TCP handshake hung. Render terminated the container due to failed port-binding health checks.
+* **The Problem**: Default SQLAlchemy database drivers have infinite timeouts on initial socket connections.
+* **The Solution**: Added `connect_timeout=10` to SQLAlchemy's engine parameters (`connect_args={"connect_timeout": 10}`). If Neon is sleeping, the connection fails quickly, FastAPI logs a warning, and Uvicorn boots up successfully.
 
-### Why It Failed
-Two things went wrong here:
-1. **The SDK Deadlock**: The backend was using the official Google GenAI SDK. When running on Render, the SDK attempted to query the GCP Metadata Server (`169.254.169.254`) to see if it was running inside GCP. Since Render is hosted on AWS, the metadata query hung, deadlocking the background worker.
-2. **The Polling Storm**: While the worker was deadlocked, the React frontend kept polling `/github/status/username` every 2 seconds. When the user switched tabs, the browser buffered these requests and fired them all at once when they switched back. On Render's 0.1 CPU free tier, handling 10 status checks a second consumed 100% of the CPU, leaving zero resources for the background thread to ever recover or finish importing libraries.
+### 2. Heavy PyTorch / SentenceTransformers Out-Of-Memory (OOM) Crashes
+* **The Failure**: Importing `sentence-transformers` or `torch` at top-level Python initialization consumed ~400MB RAM immediately on container boot.
+* **The Problem**: Render's free tier caps total RAM at 512MB. The server crashed with exit code 137 (OOM killed) before binding to port 8000.
+* **The Solution**: Removed PyTorch and local transformer execution from the production path entirely. Shifted vector generation to cloud API endpoints (`Google Gemini REST API`).
 
-### The Fix
-1. We replaced the official SDK with direct REST calls using `httpx` (no GCP check, zero deadlock).
-2. We replaced `RecursiveCharacterTextSplitter` from LangChain (which takes 4+ seconds to import and consumes massive CPU) with a zero-dependency, pure-Python recursive text splitter.
-3. We updated the React frontend to use **exponential backoff polling** (starts at 2 seconds, scales up to 10 seconds if the task takes longer).
+### 3. Gmail SMTP Port 465 Firewall Block on Render
+* **The Failure**: Triggering OTP verification emails worked locally but timed out indefinitely on Render.
+* **The Problem**: Cloud providers block outbound SMTP ports (465/587) by default to prevent spam.
+* **The Solution**: Integrated the Resend API via standard HTTPS (Port 443) using `httpx.post`. Added fallback logic to Gmail SMTP for local development, and console logging if both fail.
 
----
+### 4. FastAPI CORS Middleware Wildcard Credentials Conflict
+* **The Failure**: Browser blocked all requests with CORS errors even though `allow_origins=["*"]` was configured in FastAPI.
+* **The Problem**: The fetch API specification forbids `allow_credentials=True` when `allow_origins=["*"]` is present.
+* **The Solution**: Set `allow_credentials=False` in FastAPI's `CORSMiddleware`. Since authentication relies on custom HTTP `Authorization: Bearer <jwt>` headers, credentials cookies are not required.
 
-## Important Rules of Thumb for Future Deploys
+### 5. GitHub API Base64 README Unicode Decoding Crashes
+* **The Failure**: Attempting to analyze repositories with binary assets or non-UTF-8 characters in their README caused `UnicodeDecodeError` crashes during profile ingestion.
+* **The Problem**: Standard `base64.b64decode(content).decode('utf-8')` throws an unhandled exception on invalid bytes.
+* **The Solution**: Implemented lossy UTF-8 decoding: `base64.b64decode(raw_b64).decode('utf-8', errors='replace')`.
 
-1. **Vite Env Vars are Build-Time**: If you change an environment variable starting with `VITE_` in your hosting provider (Vercel, Netlify, etc.), you **MUST** trigger a manual redeployment / build. Changing it in the dashboard changes nothing for current visitors.
-2. **Never import PyTorch or large libraries on free tiers**: If your backend app loads `torch`, `sentence-transformers`, or langchain splitters at ASGI startup, it will crash or crawl to a halt. Always offload vector computations to external APIs (Gemini/Hugging Face Inference API) and keep imports inline or custom.
-3. **Use direct REST over SDKs on non-GCP containers**: If a Google Cloud client SDK hangs, it's almost always looking for the Instance Metadata Server. Switch to direct REST endpoints.
-4. **Use Redis as your log viewer**: When debugging Render background tasks, stdout logs are often buffered or delayed. Writing timestamped logs to a Redis list (`logs:analyze:username`) gives you a bulletproof, real-time debugging trace queryable from any machine.
+### 6. Ingestion Slowdowns from Junk / Forked / Low-Quality Repos
+* **The Failure**: Profile analysis took 5+ minutes for users with dozens of repositories (e.g. empty test repos, forks, boilerplate READMEs).
+* **The Problem**: Generating vectors for 50+ repositories overwhelmed the free tier limits.
+* **The Solution**: Implemented smart repo filtering in `indexing_config.py`:
+  * Filter out forks (`SKIP_FORKS = True`) and archived repos.
+  * Rank repositories by popularity (`stars + forks`).
+  * Skip READMEs under 300 characters.
+  * Cap ingestion at the top `MAX_REPOS_TO_INDEX = 15`.
+
+### 7. Redundant Vector Embedding Generation (No SHA Caching)
+* **The Failure**: Analyzing the same profile twice took just as long as the first time, re-embedding identical text.
+* **The Problem**: There was no cache layer checking if a repository README had actually changed on GitHub.
+* **The Solution**: Implemented SHA-based incremental caching in Redis (`cache:embed:{username}:{repo}`). On re-analysis, the pipeline compares the latest Git commit SHA against Redis; if unchanged, it skips chunking and model calls completely (<1s execution).
+
+### 8. Memory Spikes from Buffering All Repository Chunks
+* **The Failure**: Ingesting 15 large repositories simultaneously caused sudden memory spikes and background worker crashes.
+* **The Problem**: Building a single massive list of `all_chunks` across 15 repos before embedding created an $O(all\_repos)$ memory allocation peak.
+* **The Solution**: Implemented per-repository streaming. Each repo is fetched, chunked, embedded, and saved to Redis independently, capping memory usage to $O(single\_repo)$.
+
+### 9. Free Redis Storage Memory Exhaustion (30MB Limit)
+* **The Failure**: Redis Cloud threw `OOM command not allowed when used memory > 'maxmemory'`.
+* **The Problem**: Storing 3072-dim vectors for multiple GitHub users exceeded the free 30MB Redis memory allowance.
+* **The Solution**: Enabled `SINGLE_USER_MODE = True`. When a new user triggers profile analysis, the pipeline automatically purges legacy vector keys, search indexes, and SHA cache entries belonging to previous users.
+
+### 10. Google GenAI SDK Metadata Server Deadlock on Non-GCP Hosting
+* **The Failure**: Background ingestion hung at `repos_done: 0` on Render without throwing an exception or timeout.
+* **The Problem**: Google's official Python SDKs (`google-genai`, `langchain-google-genai`) initiate an Application Default Credentials (ADC) lookup at startup. On Render (AWS infrastructure), the HTTP GET request to `http://169.254.169.254` (GCP Metadata Server) hung indefinitely.
+* **The Solution**: Bypassed the SDK completely. Created a custom, direct REST client `GeminiAPIEmbeddings` that calls `https://generativelanguage.googleapis.com` directly using standard `httpx.post`.
+
+### 11. Missing Production Environment Variables on Render (`GOOGLE_API_KEY`)
+* **The Failure**: After switching to Gemini embeddings, local tests passed but production analysis hung.
+* **The Problem**: `GOOGLE_API_KEY` was present in the local `.env` file but was never added to Render's Environment dashboard settings.
+* **The Solution**: Added `GOOGLE_API_KEY` to Render's service dashboard and triggered a manual redeployment.
+
+### 12. Vite Frontend Defaulting to `localhost:8000` in Production
+* **The Failure**: Deployed frontend on Vercel made zero network calls to the backend on Render.
+* **The Problem**: In `api.ts`, `BASE_URL` fell back to `http://localhost:8000` because `VITE_API_URL` was not declared in Vercel's environment variables.
+* **The Solution**: Defined `VITE_API_URL = https://redis-rag.onrender.com` inside Vercel's Project Settings.
+
+### 13. Forgetting to Rebuild Vercel After Adding Environment Variables
+* **The Failure**: Setting `VITE_API_URL` on Vercel did not fix the frontend immediately; it still tried to connect to `localhost`.
+* **The Problem**: Vite bakes environment variables starting with `VITE_` into static JS bundles **at build time**. Changing dashboard variables has no effect on an existing build artifact.
+* **The Solution**: Navigated to Vercel Deployments -> `...` -> **Redeploy** to trigger a clean build that compiled the updated environment variable into the JavaScript bundle.
+
+### 14. Frontend Polling Storm Starving Background Worker CPU
+* **The Failure**: Render logs showed 10+ status check requests per second. The background ingestion worker never progressed.
+* **The Problem**: Fixed `setInterval(checkStatus, 2000)` polling in React, combined with browser background tab throttling backlogs, flooded Render's 0.1 CPU core with HTTP status handling, starving the single-threaded background worker.
+* **The Solution**: Implemented **exponential backoff status polling** in React (`2s -> 4s -> 6s -> 8s -> 10s`), reducing steady-state server polling traffic by over 80%.
+
+### 15. LangChain `RecursiveCharacterTextSplitter` Heavy Import Freeze
+* **The Failure**: The background task logged `[1/8] Processing repository...` and froze on the text splitter line.
+* **The Problem**: Lazy-loading `from langchain_text_splitters import RecursiveCharacterTextSplitter` took 4+ seconds to import. Under heavy CPU load, the import thread starved completely.
+* **The Solution**: Replaced the entire dependency with an inline, zero-dependency, pure-Python recursive text splitter function `_split_text()` that executes in microseconds.
+
+### 16. Orphaned "Processing" Redis Status Keys After Container Restarts
+* **The Failure**: Deploying a backend fix left the frontend stuck on an un-clickable loading spinner forever.
+* **The Problem**: Container restarts kill running background tasks abruptly without executing cleanup code. The key `status:analyze:{username}` remained stuck at `"status": "processing"`.
+* **The Solution**: Set a 1-hour TTL (`ex=3600`) on all status keys, and added manual/automatic cache deletion logic (`redis_client.delete(...)`) to reset orphaned states.
+
+### 17. Black-Box Background Debugging on Ephemeral Containers
+* **The Failure**: Couldn't trace why background threads were hanging on Render because stdout print statements were buffered and hard to track.
+* **The Problem**: Render's web log viewer has limited scrollback and no programmatic API.
+* **The Solution**: Built a custom `log_to_redis(username, message)` utility that appends timestamped execution events to a Redis list (`logs:analyze:{username}`). Querying Redis remotely provided an instant, line-by-line execution trace.
