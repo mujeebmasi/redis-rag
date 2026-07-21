@@ -1,0 +1,70 @@
+# The Deployed Server Rant: What Went Wrong and How It Was Solved
+
+If you are reading this, it means we spent hours fighting mysterious freezes, endless loading spinners, and silent failures while trying to deploy a simple FastAPI + React RAG app to the cloud.
+
+This document chronicles the absolute chaos of the last 3 days of debugging, where everything worked perfectly locally, but died silently the moment it touched the internet. 
+
+---
+
+## 1. The "Invisible Env Var" Incident (Render side)
+
+### The Mistake
+We switched the default embedding model to Google Gemini to make profile ingestion lightning-fast (from 5 minutes down to 10 seconds). We tested it, pushed it, and... it hung indefinitely. 
+
+### Why It Failed
+The Gemini model requires a `GOOGLE_API_KEY`. It was sitting nicely in the local `.env` file, but **it was completely missing from the Render Environment settings**. 
+
+Instead of throwing a clear "API Key Missing" exception, the codebase at the time was trying to import and initialize the heavy HuggingFace/PyTorch libraries as a fallback, causing the server to hit Render's 512MB RAM limit and throttle down to near-zero CPU cycles, freezing the request forever.
+
+### The Fix
+1. Get a free Gemini key from Google AI Studio.
+2. Go to **Render Dashboard** -> **redis-rag Web Service** -> **Environment**.
+3. Add `GOOGLE_API_KEY` with the correct key value.
+4. Redeploy the backend.
+
+---
+
+## 2. The Vercel "Silent Host" Incident (Frontend side)
+
+### The Mistake
+The frontend was deployed on Vercel, and the backend was on Render. We opened the Vercel app, typed a username, clicked "Analyze", and... absolutely nothing happened. No network requests in the Render dashboard, no logs, nothing.
+
+### Why It Failed
+Vite compiles and packages React applications into static HTML/JS files. At runtime in the browser, the frontend has no idea where the backend is unless it's explicitly told. 
+
+In `api.ts`, we wrote:
+```typescript
+const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+```
+Since `VITE_API_URL` was not set in Vercel's environment variables, Vercel built the frontend to call `http://localhost:8000`. The browser was trying to send requests to the user's local machine instead of the deployed backend on Render!
+
+### The Fix
+1. Go to **Vercel Dashboard** -> **Project Settings** -> **Environment Variables**.
+2. Add `VITE_API_URL` with the value `https://redis-rag.onrender.com` (no trailing slash).
+3. **Crucial Step**: Go to Vercel's Deployments tab, click the three dots on the latest deployment, and select **Redeploy**. (Because Vite embeds variables during build time, simply adding the variable does nothing until you trigger a rebuild).
+
+---
+
+## 3. The "Infinite Spinner" / Polling Storm Starvation
+
+### The Mistake
+We refreshed the browser, clicked "Analyze", and saw the loading spinner. It stayed at `analyzing...` for 10 minutes. The logs showed the server was receiving 10 requests per second.
+
+### Why It Failed
+Two things went wrong here:
+1. **The SDK Deadlock**: The backend was using the official Google GenAI SDK. When running on Render, the SDK attempted to query the GCP Metadata Server (`169.254.169.254`) to see if it was running inside GCP. Since Render is hosted on AWS, the metadata query hung, deadlocking the background worker.
+2. **The Polling Storm**: While the worker was deadlocked, the React frontend kept polling `/github/status/username` every 2 seconds. When the user switched tabs, the browser buffered these requests and fired them all at once when they switched back. On Render's 0.1 CPU free tier, handling 10 status checks a second consumed 100% of the CPU, leaving zero resources for the background thread to ever recover or finish importing libraries.
+
+### The Fix
+1. We replaced the official SDK with direct REST calls using `httpx` (no GCP check, zero deadlock).
+2. We replaced `RecursiveCharacterTextSplitter` from LangChain (which takes 4+ seconds to import and consumes massive CPU) with a zero-dependency, pure-Python recursive text splitter.
+3. We updated the React frontend to use **exponential backoff polling** (starts at 2 seconds, scales up to 10 seconds if the task takes longer).
+
+---
+
+## Important Rules of Thumb for Future Deploys
+
+1. **Vite Env Vars are Build-Time**: If you change an environment variable starting with `VITE_` in your hosting provider (Vercel, Netlify, etc.), you **MUST** trigger a manual redeployment / build. Changing it in the dashboard changes nothing for current visitors.
+2. **Never import PyTorch or large libraries on free tiers**: If your backend app loads `torch`, `sentence-transformers`, or langchain splitters at ASGI startup, it will crash or crawl to a halt. Always offload vector computations to external APIs (Gemini/Hugging Face Inference API) and keep imports inline or custom.
+3. **Use direct REST over SDKs on non-GCP containers**: If a Google Cloud client SDK hangs, it's almost always looking for the Instance Metadata Server. Switch to direct REST endpoints.
+4. **Use Redis as your log viewer**: When debugging Render background tasks, stdout logs are often buffered or delayed. Writing timestamped logs to a Redis list (`logs:analyze:username`) gives you a bulletproof, real-time debugging trace queryable from any machine.
