@@ -17,7 +17,7 @@ Tuning Guide
 """
 
 # ── Repository Filtering ────────────────────────────────────────────
-MAX_REPOS_TO_INDEX: int = 10       # Index only the top N repos by popularity
+MAX_REPOS_TO_INDEX: int = 15       # Index only the top N repos by popularity
 MIN_README_LENGTH: int = 300       # Skip READMEs shorter than this (chars)
 SKIP_FORKS: bool = True            # Skip forked repositories
 SKIP_ARCHIVED: bool = True         # Skip archived repositories
