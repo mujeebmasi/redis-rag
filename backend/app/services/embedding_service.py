@@ -166,6 +166,59 @@ class HuggingFaceAPIEmbeddings:
         return self._embed_with_retry([text])[0]
 
 
+class GeminiAPIEmbeddings:
+    """
+    Lightweight Gemini API client that bypasses the Google GenAI SDK.
+
+    This completely prevents Google's GCP default credentials lookup,
+    which deadlocks on non-GCP cloud platforms like Render.
+    """
+
+    def __init__(self, google_api_key: str, model_name: str = "models/gemini-embedding-001"):
+        self.google_api_key = google_api_key
+        self.model_name = model_name
+        self.single_url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:embedContent?key={google_api_key}"
+        self.batch_url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:batchEmbedContents?key={google_api_key}"
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+
+        requests = [
+            {
+                "model": self.model_name,
+                "content": {"parts": [{"text": t}]}
+            }
+            for t in texts
+        ]
+
+        try:
+            response = httpx.post(
+                self.batch_url,
+                json={"requests": requests},
+                timeout=30.0
+            )
+            response.raise_for_status()
+            data = response.json()
+            embeddings = data.get("embeddings", [])
+            return [e["values"] for e in embeddings]
+        except Exception as e:
+            raise RuntimeError(f"Gemini API Batch Embedding error: {str(e)}")
+
+    def embed_query(self, text: str) -> list[float]:
+        try:
+            response = httpx.post(
+                self.single_url,
+                json={"content": {"parts": [{"text": text}]}},
+                timeout=30.0
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data["embedding"]["values"]
+        except Exception as e:
+            raise RuntimeError(f"Gemini API Embedding error: {str(e)}")
+
+
 _embeddings_model = None
 
 
@@ -184,12 +237,10 @@ def _get_embeddings_model():
                 model_kwargs={"device": "cpu"},
             )
         else:
-            logger.info("Using ultra-fast Google Gemini Embeddings (models/gemini-embedding-001).")
-            from langchain_google_genai import GoogleGenerativeAIEmbeddings
-
-            _embeddings_model = GoogleGenerativeAIEmbeddings(
-                model="models/gemini-embedding-001",
+            logger.info("Using ultra-fast Google Gemini REST Embeddings (models/gemini-embedding-001).")
+            _embeddings_model = GeminiAPIEmbeddings(
                 google_api_key=settings.GOOGLE_API_KEY,
+                model_name="models/gemini-embedding-001",
             )
     return _embeddings_model
 
