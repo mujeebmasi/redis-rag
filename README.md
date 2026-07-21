@@ -10,27 +10,27 @@ RedisRAG fetches public repositories, reads their README files, converts them in
 
 ```mermaid
 graph LR
-    subgraph You["🧑 You"]
+    subgraph You["You"]
         Browser[Browser]
     end
 
-    subgraph Frontend["⚛️ React Frontend (Vercel)"]
+    subgraph Frontend["React Frontend (Vercel)"]
         UI[Dashboard UI]
     end
 
-    subgraph Backend["⚡ FastAPI Backend (Render)"]
+    subgraph Backend["FastAPI Backend (Render)"]
         API[REST API]
         Embed[Gemini Embeddings]
         RAG[RAG Engine]
     end
 
-    subgraph External["☁️ External APIs"]
+    subgraph External["External APIs"]
         GitHub[GitHub API]
         Gemini[Google Gemini API]
         Groq[Groq LLM API]
     end
 
-    subgraph Storage["💾 Databases"]
+    subgraph Storage["Databases"]
         Redis[(Redis Vector DB)]
         Postgres[(PostgreSQL)]
     end
@@ -51,11 +51,11 @@ graph LR
 
 ```mermaid
 graph TD
-    A["👤 Enter GitHub username"] --> B["📡 Fetch repos + READMEs from GitHub API"]
-    B --> C["✂️ Split each README into text chunks"]
-    C --> D["🧠 Convert chunks → 3072-dim vectors via Google Gemini REST API"]
-    D --> E["💾 Store vectors + metadata in Redis"]
-    E --> F["✅ Profile ready for questions!"]
+    A["Enter GitHub username"] --> B["Fetch repos + READMEs from GitHub API"]
+    B --> C["Split each README into text chunks"]
+    C --> D["Convert chunks to 3072-dim vectors via Google Gemini REST API"]
+    D --> E["Store vectors + metadata in Redis"]
+    E --> F["Profile ready for questions!"]
 
     style A fill:#e8f5e9
     style F fill:#e8f5e9
@@ -65,11 +65,11 @@ graph TD
 
 ```mermaid
 graph TD
-    Q["❓ You ask: 'What projects use FastAPI?'"] --> V["🧠 Convert question → vector via Gemini"]
-    V --> S["🔍 Search Redis for most similar README chunks (KNN cosine)"]
-    S --> P["📝 Build prompt: 'Based on these docs, answer...'"]
-    P --> L["🤖 Send prompt → Groq Llama 3.3 70B"]
-    L --> R["💬 Get grounded answer with source repos"]
+    Q["You ask: 'What projects use FastAPI?'"] --> V["Convert question to vector via Gemini"]
+    V --> S["Search Redis for most similar README chunks (KNN cosine)"]
+    S --> P["Build prompt: 'Based on these docs, answer...'"] 
+    P --> L["Send prompt to Groq Llama 3.3 70B"]
+    L --> R["Get grounded answer with source repos"]
 
     style Q fill:#e3f2fd
     style R fill:#e3f2fd
@@ -85,7 +85,7 @@ graph TD
 | **Backend** | Python + FastAPI + Uvicorn | REST API server |
 | **Vector DB** | Redis Stack (RediSearch module) | Store and search embedding vectors |
 | **User DB** | PostgreSQL | Store verified user accounts |
-| **Embeddings** | Google Gemini REST API (`gemini-embedding-001`) | Convert text → 3072-dimensional vectors |
+| **Embeddings** | Google Gemini REST API (`gemini-embedding-001`) | Convert text to 3072-dimensional vectors |
 | **LLM** | Groq API (Llama 3.3 70B Versatile) | Generate AI answers from retrieved context |
 | **Auth** | Email OTP + JWT tokens | Stateless authentication |
 | **Email** | Resend API (primary) / Gmail SMTP (fallback) | Send OTP verification emails |
@@ -95,27 +95,27 @@ graph TD
 
 ## Features
 
-### 🔐 Authentication
+### Authentication
 - **Email OTP login** — Users enter their email, receive a 6-digit code, and verify it.
 - **OTP stored in Redis** with a 5-minute TTL (auto-expires).
 - **JWT tokens** — After verification, the API issues a Bearer token that protects all endpoints.
 - **User persistence** — Verified users are saved to PostgreSQL after first login.
 
-### 📊 GitHub Profile Analysis
+### GitHub Profile Analysis
 - **Fetches all public repos** and their README files via GitHub API.
 - **Smart filtering** — Skips forks, archived repos, and READMEs shorter than 300 characters.
 - **Ranks repos** by popularity (stars + forks) and indexes the top 15.
 - **Background processing** — Analysis runs in a background thread so the API responds instantly.
 - **Real-time progress** — Frontend polls status with exponential backoff to track progress.
 
-### 🧠 Embeddings & Vector Storage
+### Embeddings & Vector Storage
 - **Google Gemini REST API** — Direct HTTP POST calls to `generativelanguage.googleapis.com` (no SDK, no deadlocks).
 - **3072-dimensional vectors** — High-fidelity semantic representations of README content.
 - **Zero-dependency text splitter** — Pure Python recursive splitter (no langchain import needed).
 - **SHA-based caching** — Tracks the Git SHA of each README. Re-analysis skips unchanged repos entirely.
 - **Dynamic index management** — Automatically detects vector dimension mismatches and recreates the Redis index.
 
-### 💬 RAG Chat
+### RAG Chat
 - **Cosine similarity search** — KNN Flat algorithm in Redis finds the most relevant README chunks.
 - **Groq Llama 3.3 70B** — Generates fast, accurate answers grounded in the retrieved context.
 - **Source citations** — Every answer lists which repositories were referenced.
@@ -341,18 +341,18 @@ graph TD
 
     subgraph PerRepo["Per-Repository Processing"]
         Loop --> SHA{"Check SHA cache in Redis"}
-        SHA -->|"Same SHA"| Skip["✅ Skip (already indexed)"]
-        SHA -->|"Different/New"| Clean["🗑️ Delete old vectors for this repo"]
-        Clean --> Chunk["✂️ Split README into ~1500-char chunks"]
-        Chunk --> Batch["📦 Batch chunks (up to 32 per API call)"]
-        Batch --> Embed["🧠 POST to Gemini batchEmbedContents"]
-        Embed --> Store["💾 Write vectors + metadata to Redis"]
-        Store --> Cache["📌 Save new SHA to cache"]
+        SHA -->|"Same SHA"| Skip["Skip (already indexed)"]
+        SHA -->|"Different/New"| Clean["Delete old vectors for this repo"]
+        Clean --> Chunk["Split README into ~1500-char chunks"]
+        Chunk --> Batch["Batch chunks (up to 32 per API call)"]
+        Batch --> Embed["POST to Gemini batchEmbedContents"]
+        Embed --> Store["Write vectors + metadata to Redis"]
+        Store --> Cache["Save new SHA to cache"]
     end
 
     Skip --> Next["Next repo"]
     Cache --> Next
-    Next --> Done["✅ Mark status as 'completed'"]
+    Next --> Done["Mark status as 'completed'"]
 
     style Skip fill:#d4edda,stroke:#28a745
     style Embed fill:#fff3cd,stroke:#ffc107
@@ -402,8 +402,8 @@ Every production bug encountered while deploying RedisRAG to Render + Vercel, th
 ```mermaid
 graph LR
     SDK["Google GenAI SDK"] -->|"HTTP GET"| Meta["GCP Metadata Server<br/>169.254.169.254"]
-    Meta -.->|"❌ No response<br/>(not on GCP)"| SDK
-    SDK -->|"⏳ Blocks for 2+ min<br/>then retries..."| Dead["💀 Thread deadlocked"]
+    Meta -.->|"No response<br/>(not on GCP)"| SDK
+    SDK -->|"Blocks for 2+ min<br/>then retries..."| Dead["Thread deadlocked"]
 ```
 
 **Solution:** Replaced the SDK with a `GeminiAPIEmbeddings` class that calls the Gemini REST API directly via `httpx`:
@@ -447,7 +447,7 @@ This import triggers a chain reaction of heavy imports (LangChain core, Pydantic
 graph TD
     FE["React Frontend"] -->|"Every 2 seconds"| API["GET /status"]
     API -->|"9-12 req/sec flood"| CPU["Render CPU (0.1 core)"]
-    CPU -->|"100% busy with HTTP"| BG["❌ Background thread starved"]
+    CPU -->|"100% busy with HTTP"| BG["Background thread starved"]
 ```
 
 **Solution:** Replaced with exponential backoff — polling interval grows from 2s → 4s → 6s → 8s → 10s (capped). Reduces steady-state load by 80%.
@@ -488,7 +488,7 @@ redis_client.lrange("logs:analyze:mujeebmasi", 0, -1)
 
 ## Important Things to Keep in Mind
 
-### 🧠 Embedding & AI APIs
+### Embedding & AI APIs
 
 | Do This | Don't Do This | Why |
 |---------|---------------|-----|
@@ -498,7 +498,7 @@ redis_client.lrange("logs:analyze:mujeebmasi", 0, -1)
 | **Cache by Git SHA** — skip repos whose README hasn't changed | Re-embed everything on every analysis | Re-runs complete in <1 second instead of minutes |
 | Use **Groq** for the LLM (Llama 3.3 70B) | Self-host a model on free-tier servers | Free tier gives insanely fast inference; self-hosting needs expensive GPUs |
 
-### 🚀 Free-Tier Cloud Deployment
+### Free-Tier Cloud Deployment
 
 | Do This | Don't Do This | Why |
 |---------|---------------|-----|
@@ -508,7 +508,7 @@ redis_client.lrange("logs:analyze:mujeebmasi", 0, -1)
 | Use `print(..., flush=True)` for logging | Use regular `print()` | Python's stdout is block-buffered on Render — logs won't appear without `flush=True` |
 | Design background tasks for **abrupt termination** | Assume tasks will always complete cleanly | Container restarts kill tasks instantly with no cleanup |
 
-### ⚛️ Frontend + Backend Deployment
+### Frontend + Backend Deployment
 
 | Do This | Don't Do This | Why |
 |---------|---------------|-----|
@@ -516,7 +516,7 @@ redis_client.lrange("logs:analyze:mujeebmasi", 0, -1)
 | Use **`CORS allow_credentials=False`** with `allow_origins=["*"]` | Use `allow_credentials=True` with wildcard origins | Browsers block this combination — CORS errors will silently kill all requests |
 | Add a "force re-analyze" option for stale states | Assume the UI will always recover | If the backend restarts mid-task, the status is stuck at `"processing"` — the user needs a manual escape hatch |
 
-### 🗄️ Redis & Database
+### Redis & Database
 
 | Do This | Don't Do This | Why |
 |---------|---------------|-----|
