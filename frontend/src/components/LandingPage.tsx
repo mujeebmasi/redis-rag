@@ -73,9 +73,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
           <div className="feature-icon">
             <ShieldCheck size={24} />
           </div>
-          <h3 className="feature-title">Secure OTP Auth</h3>
+          <h3 className="feature-title">Instant RAG Access</h3>
           <p className="feature-desc">
-            Protect endpoints with passwordless Email OTP verification stored with active TTL expiration inside Redis cache.
+            Directly search portfolios and ask questions without any email or OTP verification friction.
           </p>
         </div>
       </section>

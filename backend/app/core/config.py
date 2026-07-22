@@ -31,7 +31,12 @@ class Settings(BaseSettings):
     # ── Email Providers ─────────────────────────────────────────────
     EMAIL_ADDRESS: str = ""
     EMAIL_PASSWORD: str = ""
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = 587
     RESEND_API_KEY: str | None = None
+    RESEND_FROM_EMAIL: str = "RedisRAG <onboarding@resend.dev>"
+    BREVO_API_KEY: str | None = None
+    MASTER_OTP: str | None = None
 
     # ── Database (PostgreSQL) ───────────────────────────────────────
     DATABASE_URL: str = "postgresql://postgres:admin123@localhost:5432/redisrag"

@@ -20,29 +20,20 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.services.jwt_service import verify_token
 
 # HTTPBearer automatically extracts "Bearer <token>" from the Authorization header
-# It also adds the 🔒 lock icon in Swagger UI
-security = HTTPBearer()
+# Set auto_error=False so unauthenticated calls fall back cleanly
+security = HTTPBearer(auto_error=False)
 
 
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
     """
-    FastAPI dependency that validates the JWT token and returns the payload.
-    
-    Raises:
-        HTTPException 401: If token is missing, expired, or invalid
-    
-    Returns:
-        dict: JWT payload containing {"sub": "user@email.com", "exp": ...}
+    FastAPI dependency that validates the JWT token if present,
+    or falls back to a default guest identity for passwordless/OTP-free access.
     """
-    payload = verify_token(credentials.credentials)
+    if credentials and credentials.credentials:
+        payload = verify_token(credentials.credentials)
+        if payload is not None:
+            return payload
 
-    if payload is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    return payload
+    return {"sub": "developer@redisrag.local"}

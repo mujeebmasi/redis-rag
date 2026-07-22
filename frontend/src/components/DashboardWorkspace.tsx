@@ -97,7 +97,7 @@ export const DashboardWorkspace: React.FC<DashboardWorkspaceProps> = ({ userEmai
         </div>
         <div className="workspace-user">
           <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>{userEmail}</span>
-          <button onClick={onLogout} className="btn-secondary">Logout</button>
+          <button onClick={onLogout} className="btn-secondary">Home</button>
         </div>
       </header>
 

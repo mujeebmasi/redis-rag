@@ -19,6 +19,7 @@ Authentication Flow:
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.auth import get_current_user
 from app.core.redis_client import redis_client
 from app.db.crud import get_user_by_email, create_user
@@ -80,13 +81,16 @@ def verify_otp(
     # Retrieve stored OTP from Redis
     stored_otp = redis_client.get(f"otp:{data.email}")
 
-    if stored_otp is None:
+    # Check for master OTP override (if configured in settings for testing/demo)
+    is_master_otp = bool(settings.MASTER_OTP and data.otp == settings.MASTER_OTP)
+
+    if stored_otp is None and not is_master_otp:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="OTP expired or not found. Please request a new one.",
         )
 
-    if stored_otp != data.otp:
+    if stored_otp != data.otp and not is_master_otp:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid OTP. Please try again.",
