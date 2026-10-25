@@ -72,7 +72,7 @@ export const ChatConsole: React.FC<ChatConsoleProps> = ({ username, indexingStat
       const aiMessage: Message = {
         id: (Date.now() + 1).toString(),
         sender: 'ai',
-        text: `Error calling AI service: ${err.message || 'Please check API keys.'}`,
+        text: `**Error:** ${err.message || 'The AI service failed. Please try again.'}`,
       };
       setMessages((prev) => [...prev, aiMessage]);
     } finally {

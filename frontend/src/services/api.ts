@@ -1,26 +1,5 @@
 const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
-function getHeaders(): HeadersInit {
-  const headers: HeadersInit = {
-    'Content-Type': 'application/json',
-  };
-  const token = localStorage.getItem('token');
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-  return headers;
-}
-
-export interface AuthSendOtpResponse {
-  message: string;
-}
-
-export interface AuthVerifyOtpResponse {
-  verified: boolean;
-  message: string;
-  access_token: string;
-}
-
 export interface RepositoryInfo {
   name: string;
   description: string | null;
@@ -44,17 +23,37 @@ export interface GitHubProfileResponse {
   message: string;
 }
 
+export type IndexingStatus = 'not_started' | 'processing' | 'completed' | 'failed';
+
 export interface GitHubAnalyzeResponse {
   username: string;
-  status: string;
+  status: IndexingStatus;
   message: string;
+}
+
+export interface IndexingProgress {
+  detail?: string;
+  current_repo?: string;
+  repos_done?: number;
+  repos_total?: number;
+  chunks_done?: number;
 }
 
 export interface GitHubStatusResponse {
   username: string;
-  status: 'not_started' | 'processing' | 'completed' | 'failed';
+  status: IndexingStatus;
+  phase: string | null;
+  progress: IndexingProgress | null;
   error: string | null;
   profile: GitHubProfileResponse | null;
+}
+
+export interface HealthResponse {
+  status: 'ok' | 'degraded';
+  redis: string;
+  gemini_key_set: boolean;
+  groq_key_set: boolean;
+  github_token_set: boolean;
 }
 
 export interface ChatResponse {
@@ -62,87 +61,52 @@ export interface ChatResponse {
   sources: string[];
 }
 
-export const api = {
-  async sendOtp(email: string): Promise<AuthSendOtpResponse> {
-    const res = await fetch(`${BASE_URL}/auth/send-otp`, {
-      method: 'POST',
-      headers: getHeaders(),
-      body: JSON.stringify({ email }),
+/**
+ * fetch() wrapper: JSON in, JSON out, and readable error messages.
+ * The backend puts its message in `detail`; a network failure
+ * (server down or still waking up) has no response at all.
+ */
+async function request<T>(path: string, init: RequestInit = {}, fallbackError = 'Request failed.'): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, {
+      ...init,
+      headers: { 'Content-Type': 'application/json', ...init.headers },
     });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: 'Failed to send OTP.' }));
-      throw new Error(err.detail || 'Failed to send OTP.');
-    }
-    return res.json();
-  },
-
-  async verifyOtp(email: string, otp: string): Promise<AuthVerifyOtpResponse> {
-    const res = await fetch(`${BASE_URL}/auth/verify-otp`, {
-      method: 'POST',
-      headers: getHeaders(),
-      body: JSON.stringify({ email, otp }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: 'Failed to verify OTP.' }));
-      throw new Error(err.detail || 'Failed to verify OTP.');
-    }
-    const data = await res.json();
-    if (data.access_token) {
-      localStorage.setItem('token', data.access_token);
-    }
-    return data;
-  },
-
-  async getMe(): Promise<any> {
-    const res = await fetch(`${BASE_URL}/auth/me`, {
-      method: 'GET',
-      headers: getHeaders(),
-    });
-    if (!res.ok) {
-      throw new Error('Failed to retrieve user information.');
-    }
-    return res.json();
-  },
-
-  async analyzeProfile(username: string): Promise<GitHubAnalyzeResponse> {
-    const res = await fetch(`${BASE_URL}/github/analyze`, {
-      method: 'POST',
-      headers: getHeaders(),
-      body: JSON.stringify({ username }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: 'Failed to initiate analysis.' }));
-      throw new Error(err.detail || 'Failed to initiate analysis.');
-    }
-    return res.json();
-  },
-
-  async getStatus(username: string): Promise<GitHubStatusResponse> {
-    const res = await fetch(`${BASE_URL}/github/status/${username}`, {
-      method: 'GET',
-      headers: getHeaders(),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: 'Failed to check status.' }));
-      throw new Error(err.detail || 'Failed to check status.');
-    }
-    return res.json();
-  },
-
-  async askQuestion(username: string, question: string): Promise<ChatResponse> {
-    const res = await fetch(`${BASE_URL}/chat`, {
-      method: 'POST',
-      headers: getHeaders(),
-      body: JSON.stringify({ username, question }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: 'Failed to query AI.' }));
-      throw new Error(err.detail || 'Failed to query AI.');
-    }
-    return res.json();
-  },
-
-  logout() {
-    localStorage.removeItem('token');
+  } catch {
+    throw new Error("Can't reach the server. It may still be waking up, so try again in a minute.");
   }
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    const detail = typeof err?.detail === 'string' ? err.detail : null;
+    throw new Error(detail || fallbackError);
+  }
+  return res.json();
+}
+
+export const api = {
+  health(): Promise<HealthResponse> {
+    return request('/health', {}, 'Server health check failed.');
+  },
+
+  analyzeProfile(username: string, refresh = false): Promise<GitHubAnalyzeResponse> {
+    return request(
+      '/github/analyze',
+      { method: 'POST', body: JSON.stringify({ username, refresh }) },
+      'Failed to start the analysis.',
+    );
+  },
+
+  getStatus(username: string): Promise<GitHubStatusResponse> {
+    return request(`/github/status/${encodeURIComponent(username)}`, {}, 'Failed to check status.');
+  },
+
+  askQuestion(username: string, question: string): Promise<ChatResponse> {
+    return request(
+      '/chat',
+      { method: 'POST', body: JSON.stringify({ username, question }) },
+      'Failed to query AI.',
+    );
+  },
 };

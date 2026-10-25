@@ -2,6 +2,8 @@
 
 This document serves as an exhaustive chronicle of every single bug, crash, bottleneck, architectural failure, and deployment trap we fought during the development and deployment of **RedisRAG** (FastAPI + React + Redis Vector DB + Render + Vercel).
 
+> **Note:** This is a history log. Some features it mentions were removed later: email OTP login, PostgreSQL (Neon), and Single-User Mode (replaced by 768-dim vectors and a 24h expiry on every key). See the README for how the app works today.
+
 ---
 
 ## Index of 17 Failures
@@ -65,7 +67,7 @@ This document serves as an exhaustive chronicle of every single bug, crash, bott
 ### 7. Redundant Vector Embedding Generation (No SHA Caching)
 * **The Failure**: Analyzing the same profile twice took just as long as the first time, re-embedding identical text.
 * **The Problem**: There was no cache layer checking if a repository README had actually changed on GitHub.
-* **The Solution**: Implemented SHA-based incremental caching in Redis (`cache:embed:{username}:{repo}`). On re-analysis, the pipeline compares the latest Git commit SHA against Redis; if unchanged, it skips chunking and model calls completely (<1s execution).
+* **The Solution**: Implemented SHA-based incremental caching in Redis (`cache:embed:{username}:{repo}`). On re-analysis, the pipeline compares the README file's SHA (from GitHub's `/readme` API, which changes only when the README changes) against Redis; if unchanged, it skips chunking and model calls completely (<1s execution).
 
 ### 8. Memory Spikes from Buffering All Repository Chunks
 * **The Failure**: Ingesting 15 large repositories simultaneously caused sudden memory spikes and background worker crashes.

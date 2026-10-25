@@ -12,10 +12,7 @@ function App() {
         <LandingPage onGetStarted={() => setView('dashboard')} />
       )}
       {view === 'dashboard' && (
-        <DashboardWorkspace 
-          userEmail="developer@redisrag.local" 
-          onLogout={() => setView('landing')} 
-        />
+        <DashboardWorkspace onLogout={() => setView('landing')} />
       )}
     </>
   );

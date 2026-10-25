@@ -30,7 +30,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
           Analyze GitHub Portfolios with <span className="glow-text-purple">AI</span> & <span className="glow-text-cyan">Redis RAG</span>
         </h1>
         <p className="landing-subtitle">
-          RedisRAG fetches public repositories, processes README documentation, generates semantic embeddings in Redis Vector Database, and provides a grounded, AI-powered chat interface using Google Gemini.
+          RedisRAG fetches public repositories, processes README documentation, generates semantic embeddings with Google Gemini, stores them in a Redis vector index, and answers your questions with a grounded AI chat powered by Groq.
         </p>
         <button onClick={onGetStarted} className="btn-glowing">
           Get Started <ArrowRight size={20} />
@@ -55,7 +55,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
           </div>
           <h3 className="feature-title">Redis Vector Store</h3>
           <p className="feature-desc">
-            Generate and index 3072-dimensional embeddings directly in Redis Stack using in-memory cosine similarity metrics.
+            Generate 768-dimensional Gemini embeddings and search them in Redis with in-memory cosine similarity.
           </p>
         </div>
 
@@ -65,7 +65,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
           </div>
           <h3 className="feature-title">Grounded AI Chat</h3>
           <p className="feature-desc">
-            Ask complex architectural questions. RAG pipeline grounds answers with repository sources, avoiding hallucinations.
+            Ask complex architectural questions. The RAG pipeline grounds answers in README content and cites the source repositories.
           </p>
         </div>
 
@@ -95,14 +95,14 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
             <div style={{ fontSize: '2.5rem', fontWeight: 800, color: 'var(--secondary)', marginBottom: '1rem' }}>02</div>
             <h4 style={{ fontWeight: 700, marginBottom: '0.5rem', color: 'var(--text-title)' }}>Augment</h4>
             <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
-              Insert retrieved README content directly into the model's system prompt instructions.
+              Insert the retrieved README chunks and a profile overview into the model's prompt.
             </p>
           </div>
           <div className="glass-card" style={{ padding: '2rem' }}>
             <div style={{ fontSize: '2.5rem', fontWeight: 800, color: 'var(--primary)', marginBottom: '1rem' }}>03</div>
             <h4 style={{ fontWeight: 700, marginBottom: '0.5rem', color: 'var(--text-title)' }}>Generate</h4>
             <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
-              Google Gemini processes the prompt to generate grounded, fact-checked portfolios insights.
+              A Groq-hosted LLM reads the prompt and writes an answer grounded in the retrieved READMEs.
             </p>
           </div>
         </div>

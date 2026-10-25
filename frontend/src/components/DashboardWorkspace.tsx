@@ -1,21 +1,68 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/api';
-import type { GitHubProfileResponse } from '../services/api';
+import type { GitHubProfileResponse, IndexingProgress, IndexingStatus } from '../services/api';
 import { ChatConsole } from './ChatConsole';
 import { Search, Loader, Star, GitFork, BookOpen, AlertCircle, RefreshCw } from 'lucide-react';
 
 interface DashboardWorkspaceProps {
-  userEmail: string;
   onLogout: () => void;
 }
 
-export const DashboardWorkspace: React.FC<DashboardWorkspaceProps> = ({ userEmail, onLogout }) => {
+// After this many failed status checks in a row, stop polling and show an error
+const MAX_POLL_FAILURES = 5;
+
+/** Turn the backend's progress object into one readable line. */
+function describeProgress(phase: string | null, progress: IndexingProgress | null): string {
+  if (phase === 'embedding' && progress?.repos_total) {
+    const current = progress.current_repo ? ` (${progress.current_repo})` : '';
+    return `Embedding READMEs: ${progress.repos_done ?? 0}/${progress.repos_total} repositories${current}...`;
+  }
+  return progress?.detail || 'Fetching repositories and storing vector chunks in Redis...';
+}
+
+export const DashboardWorkspace: React.FC<DashboardWorkspaceProps> = ({ onLogout }) => {
   const [usernameInput, setUsernameInput] = useState('');
   const [activeUsername, setActiveUsername] = useState<string | null>(null);
-  const [indexingStatus, setIndexingStatus] = useState<'not_started' | 'processing' | 'completed' | 'failed'>('not_started');
+  const [indexingStatus, setIndexingStatus] = useState<IndexingStatus>('not_started');
+  const [progressText, setProgressText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [profile, setProfile] = useState<GitHubProfileResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  const [serverNotice, setServerNotice] = useState<string | null>(null);
+
+  // Wake the backend up as soon as the page opens. Free Render instances
+  // sleep after 15 minutes idle and need up to a minute to start again.
+  useEffect(() => {
+    let isSubscribed = true;
+    const slowTimer = setTimeout(() => {
+      if (isSubscribed) {
+        setServerNotice('Waking up the server (free hosting sleeps when idle). This can take up to a minute...');
+      }
+    }, 3000);
+
+    api.health()
+      .then((health) => {
+        if (!isSubscribed) return;
+        const problems: string[] = [];
+        if (health.redis !== 'ok') problems.push(`database ${health.redis}`);
+        if (!health.gemini_key_set) problems.push('GOOGLE_API_KEY missing');
+        if (!health.groq_key_set) problems.push('GROQ_API_KEY missing');
+        setServerNotice(
+          problems.length
+            ? `Server setup problem: ${problems.join(', ')}. Analysis won't work until this is fixed.`
+            : null,
+        );
+      })
+      .catch((err: unknown) => {
+        if (isSubscribed) setServerNotice(err instanceof Error ? err.message : 'Server is unreachable.');
+      })
+      .finally(() => clearTimeout(slowTimer));
+
+    return () => {
+      isSubscribed = false;
+      clearTimeout(slowTimer);
+    };
+  }, []);
 
   // Poll status when "processing" — uses exponential backoff to avoid CPU starvation
   useEffect(() => {
@@ -23,11 +70,13 @@ export const DashboardWorkspace: React.FC<DashboardWorkspaceProps> = ({ userEmai
 
     let isSubscribed = true;
     let pollCount = 0;
+    let failures = 0;
 
     const checkStatus = async () => {
       try {
         const response = await api.getStatus(activeUsername);
         if (!isSubscribed) return;
+        failures = 0;
 
         if (response.status === 'completed' && response.profile) {
           setIndexingStatus('completed');
@@ -35,10 +84,17 @@ export const DashboardWorkspace: React.FC<DashboardWorkspaceProps> = ({ userEmai
         } else if (response.status === 'failed') {
           setIndexingStatus('failed');
           setError(response.error || 'Indexing task failed unexpectedly.');
+        } else {
+          setProgressText(describeProgress(response.phase, response.progress));
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (!isSubscribed) return;
+        failures++;
         console.error("Status polling failed:", err);
+        if (failures >= MAX_POLL_FAILURES) {
+          setIndexingStatus('failed');
+          setError(err instanceof Error ? err.message : 'Lost contact with the server.');
+        }
       }
     };
 
@@ -65,26 +121,31 @@ export const DashboardWorkspace: React.FC<DashboardWorkspaceProps> = ({ userEmai
     };
   }, [activeUsername, indexingStatus]);
 
-  const handleStartAnalysis = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const targetUsername = usernameInput.trim().toLowerCase();
-    if (!targetUsername) return;
-
+  const startAnalysis = async (targetUsername: string, refresh = false) => {
     setLoading(true);
     setError(null);
     setProfile(null);
+    setProgressText(null);
     setIndexingStatus('not_started');
     setActiveUsername(targetUsername);
 
     try {
-      const response = await api.analyzeProfile(targetUsername);
-      setIndexingStatus(response.status as any || 'processing');
-    } catch (err: any) {
-      setError(err.message || 'Failed to request analysis.');
+      await api.analyzeProfile(targetUsername, refresh);
+      // Whether the job just started, was already running, or finished
+      // earlier ("completed" from cache), polling the status loads the result.
+      setIndexingStatus('processing');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to request analysis.');
       setIndexingStatus('failed');
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleStartAnalysis = (e: React.FormEvent) => {
+    e.preventDefault();
+    const targetUsername = usernameInput.trim().toLowerCase();
+    if (targetUsername) startAnalysis(targetUsername);
   };
 
   return (
@@ -96,7 +157,6 @@ export const DashboardWorkspace: React.FC<DashboardWorkspaceProps> = ({ userEmai
           <span>Redis<span className="glow-text-purple">RAG</span></span>
         </div>
         <div className="workspace-user">
-          <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>{userEmail}</span>
           <button onClick={onLogout} className="btn-secondary">Home</button>
         </div>
       </header>
@@ -106,6 +166,14 @@ export const DashboardWorkspace: React.FC<DashboardWorkspaceProps> = ({ userEmai
         {/* Left Column: GitHub Analyzer & Repos */}
         <section className="panel-left">
           <div className="panel-content">
+            {/* Server wake-up / setup notice */}
+            {serverNotice && (
+              <div className="server-notice" role="status">
+                <AlertCircle size={16} style={{ flexShrink: 0 }} />
+                <span>{serverNotice}</span>
+              </div>
+            )}
+
             {/* Input Form */}
             <div className="ingest-card glass-panel" style={{ marginBottom: '1.5rem' }}>
               <h3 style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--text-title)', marginBottom: '0.75rem' }}>Analyze GitHub Profile</h3>
@@ -145,10 +213,22 @@ export const DashboardWorkspace: React.FC<DashboardWorkspaceProps> = ({ userEmai
                     {indexingStatus}
                   </span>
                   <div style={{ flex: 1, fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                    {indexingStatus === 'processing' && 'Scraping repositories and inserting vector chunks into Redis Stack...'}
-                    {indexingStatus === 'completed' && `${profile?.repositories.length || 0} repositories scanned. RAG model initialized.`}
+                    {indexingStatus === 'processing' && (progressText || 'Fetching repositories and storing vector chunks in Redis...')}
+                    {indexingStatus === 'completed' &&
+                      `${profile?.total_readmes_indexed ?? 0} of ${profile?.repositories.length ?? 0} repositories have indexed READMEs. Ready to chat.`}
                     {indexingStatus === 'failed' && (error || 'Something went wrong.')}
                   </div>
+                  {activeUsername && (indexingStatus === 'completed' || indexingStatus === 'failed') && (
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      style={{ fontSize: '0.8rem', padding: '0.3rem 0.75rem' }}
+                      onClick={() => startAnalysis(activeUsername, indexingStatus === 'completed')}
+                      title="Fetch the profile again and re-embed any README that changed"
+                    >
+                      {indexingStatus === 'completed' ? 'Re-index' : 'Retry'}
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -234,7 +314,8 @@ export const DashboardWorkspace: React.FC<DashboardWorkspaceProps> = ({ userEmai
 
         {/* Right Column: RAG Chat Console */}
         <section className="panel-right">
-          <ChatConsole username={activeUsername} indexingStatus={indexingStatus} />
+          {/* key: switching profile starts a fresh conversation */}
+          <ChatConsole key={activeUsername ?? 'none'} username={activeUsername} indexingStatus={indexingStatus} />
         </section>
       </main>
     </div>
