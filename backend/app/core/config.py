@@ -22,42 +22,26 @@ _ENV_FILE = Path(__file__).resolve().parent.parent.parent.parent / ".env"
 class Settings(BaseSettings):
     """
     Application settings loaded from environment variables.
-    
+
     Pydantic-settings automatically reads from:
     1. Environment variables
     2. .env file (via model_config)
     """
 
-    # ── Email Providers ─────────────────────────────────────────────
-    EMAIL_ADDRESS: str = ""
-    EMAIL_PASSWORD: str = ""
-    SMTP_HOST: str = "smtp.gmail.com"
-    SMTP_PORT: int = 587
-    RESEND_API_KEY: str | None = None
-    RESEND_FROM_EMAIL: str = "RedisRAG <onboarding@resend.dev>"
-    BREVO_API_KEY: str | None = None
-    MASTER_OTP: str | None = None
-
-    # ── Database (PostgreSQL) ───────────────────────────────────────
-    DATABASE_URL: str = "postgresql://postgres:admin123@localhost:5432/redisrag"
-
-    # ── Redis ───────────────────────────────────────────────────────
+    # ── Redis (vector store, cache, job status) ─────────────────────
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
     REDIS_PASSWORD: str | None = None
 
-    # ── JWT ─────────────────────────────────────────────────────────
-    SECRET_KEY: str = "supersecretkey-change-in-production"
-
     # ── GitHub (optional - works without it, but rate limited) ──────
     GITHUB_TOKEN: str | None = None
 
-    # ── AI (Google Gemini, Groq & HuggingFace) ──────────────────────
+    # ── AI (Google Gemini embeddings + Groq LLM) ────────────────────
     GOOGLE_API_KEY: str = ""
     GROQ_API_KEY: str = ""
-    HF_EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
-    HUGGINGFACEHUB_API_TOKEN: str | None = None
-    HF_TOKEN: str | None = None
+    # llama-3.3-70b-versatile was shut down by Groq on 16 Aug 2026;
+    # gpt-oss-120b is Groq's recommended replacement.
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
 
     model_config = {
         "env_file": str(_ENV_FILE),

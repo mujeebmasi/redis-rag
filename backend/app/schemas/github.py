@@ -10,6 +10,7 @@ from pydantic import BaseModel
 class GitHubAnalyzeRequest(BaseModel):
     """Request body for POST /github/analyze"""
     username: str
+    refresh: bool = False  # True = re-index even if analyzed in the last 24h
 
 
 class RepositoryInfo(BaseModel):

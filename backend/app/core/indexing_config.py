@@ -4,16 +4,14 @@ Indexing Pipeline Configuration
 Centralized, tunable constants for the GitHub RAG indexing pipeline.
 
 All indexing behaviour is controlled from this single file.
-Import `from app.core.indexing_config import *` in services that
-need these values.
 
 Tuning Guide
 ------------
 - MAX_REPOS_TO_INDEX: Lower = faster, higher = more coverage.
 - MIN_README_LENGTH: Raise to skip boilerplate READMEs (e.g. 500).
 - CHUNK_SIZE: 1500 is optimal for README prose (≈375 words).
-- EMBEDDING_BATCH_SIZE: Match to your embedding API's max batch size.
-- EMBEDDING_MAX_WORKERS: Keep ≤ 5 to avoid rate-limiting on free tiers.
+- EMBEDDING_DIM: 768 uses 4x less Redis memory than the full 3072.
+- DATA_TTL_SECONDS: How long a profile's vectors and cache live in Redis.
 """
 
 # ── Repository Filtering ────────────────────────────────────────────
@@ -26,15 +24,18 @@ SKIP_ARCHIVED: bool = True         # Skip archived repositories
 CHUNK_SIZE: int = 1500             # Characters per chunk (~375 words)
 CHUNK_OVERLAP: int = 150           # Overlap between consecutive chunks
 
-# ── Embedding Generation ────────────────────────────────────────────
-EMBEDDING_BATCH_SIZE: int = 32     # Texts per embedding API call
-EMBEDDING_MAX_WORKERS: int = 5     # Parallel threads for embedding batches
-EMBEDDING_API_TIMEOUT: float = 60.0  # Timeout per API call (seconds)
-EMBEDDING_MAX_RETRIES: int = 3     # Retry attempts for transient failures
+# ── Embedding Generation (Google Gemini) ────────────────────────────
+EMBEDDING_MODEL: str = "models/gemini-embedding-001"
+EMBEDDING_DIM: int = 768           # Gemini supports 768 / 1536 / 3072
+EMBEDDING_BATCH_SIZE: int = 50     # Texts per batchEmbedContents call
+EMBEDDING_API_TIMEOUT: float = 30.0  # Timeout per API call (seconds)
+EMBEDDING_MAX_RETRIES: int = 3     # Retry attempts for 429 / 5xx / timeouts
+
+# ── Retrieval ───────────────────────────────────────────────────────
+TOP_K: int = 5                     # README chunks sent to the LLM per question
 
 # ── Redis Storage ───────────────────────────────────────────────────
 REDIS_PIPELINE_BATCH: int = 100    # Hashes per Redis pipeline flush
-CACHE_TTL_SECONDS: int = 86400     # 24h TTL for completed analysis cache
-REPO_CACHE_TTL_SECONDS: int = 86400  # 24h TTL for per-repo SHA cache
-SINGLE_USER_MODE: bool = True      # If True, cleans up other users' data when indexing a new user
-
+DATA_TTL_SECONDS: int = 86400      # 24h: vectors, SHA cache and finished status
+STATUS_TTL_SECONDS: int = 3600     # 1h: "processing" and "failed" status
+LOCK_TTL_SECONDS: int = 300        # 5 min: one indexing job per user at a time

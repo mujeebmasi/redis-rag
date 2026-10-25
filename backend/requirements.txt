@@ -7,34 +7,20 @@
 # ── Web Framework ───────────────────────────────────────────
 fastapi
 uvicorn
-python-dotenv
 
-# ── Database (PostgreSQL) ───────────────────────────────────
-sqlalchemy
-psycopg2-binary
-
-# ── Data Validation ─────────────────────────────────────────
+# ── Config & Data Validation ────────────────────────────────
 pydantic
 pydantic-settings
-pydantic[email]
 
-# ── Authentication ──────────────────────────────────────────
-python-jose[cryptography]
-
-# ── Redis ───────────────────────────────────────────────────
+# ── Redis (vector store, cache, job status) ─────────────────
 redis
 
-# ── HTTP Client (GitHub API) ────────────────────────────────
+# ── HTTP Client (GitHub + Gemini REST APIs) ─────────────────
 httpx
 
-# ── AI / LangChain ──────────────────────────────────────────
-langchain-huggingface
-sentence-transformers
-langchain-groq
-langchain-text-splitters
+# ── LLM (Groq, called through LangChain) ────────────────────
 langchain-core
-langchain-google-genai
+langchain-groq
 
-
-# ── Numerical (for embeddings) ──────────────────────────────
+# ── Numerical (vector → bytes for Redis) ────────────────────
 numpy

@@ -20,10 +20,13 @@ Rate Limits:
 import asyncio
 import base64
 import logging
+import re
+import time
 
 import httpx
 
 from app.core.config import settings
+from app.core.errors import UserFacingError
 from app.core.indexing_config import (
     MAX_REPOS_TO_INDEX,
     MIN_README_LENGTH,
@@ -35,6 +38,19 @@ logger = logging.getLogger(__name__)
 
 # GitHub API base URL
 GITHUB_API = "https://api.github.com"
+
+# GitHub usernames: letters, digits and hyphens, at most 39 characters.
+# Checking this up front also keeps usernames safe to use inside Redis keys.
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9-]{1,39}$")
+
+
+class GitHubError(UserFacingError):
+    """A GitHub problem whose message is safe to show to the user."""
+
+
+def is_valid_username(username: str) -> bool:
+    """Return True if the string looks like a GitHub username."""
+    return bool(_USERNAME_RE.match(username))
 
 
 def _get_headers() -> dict:
@@ -54,6 +70,25 @@ def _get_headers() -> dict:
     return headers
 
 
+def _check_rate_limit(response: httpx.Response) -> None:
+    """
+    Turn GitHub's rate-limit response into a clear message.
+
+    GitHub answers 403 (with x-ratelimit-remaining: 0) or 429 when
+    the hourly request budget is used up.
+    """
+    remaining = response.headers.get("x-ratelimit-remaining")
+    if response.status_code == 429 or (
+        response.status_code == 403 and remaining == "0"
+    ):
+        reset_at = int(response.headers.get("x-ratelimit-reset", "0") or 0)
+        minutes = max(1, round((reset_at - time.time()) / 60)) if reset_at else 60
+        raise GitHubError(
+            f"GitHub API rate limit reached. Try again in about {minutes} min "
+            "(setting GITHUB_TOKEN on the server raises the limit)."
+        )
+
+
 # ── Individual API Calls ─────────────────────────────────────────────
 
 
@@ -63,13 +98,13 @@ async def fetch_user_profile(client: httpx.AsyncClient, username: str) -> dict:
 
     API: GET /users/{username}
 
-    Returns dict with: login, name, bio, avatar_url, public_repos,
-    followers, following, etc.
-
     Raises:
-        httpx.HTTPStatusError: If user not found (404) or API error
+        GitHubError: If the user doesn't exist or the rate limit is hit
     """
     response = await client.get(f"{GITHUB_API}/users/{username}")
+    _check_rate_limit(response)
+    if response.status_code == 404:
+        raise GitHubError(f"GitHub user '{username}' not found.")
     response.raise_for_status()
     return response.json()
 
@@ -86,10 +121,6 @@ async def fetch_repositories(
         username: GitHub username
         max_repos: Maximum number of repos to fetch (default 100 — we
                    filter down to MAX_REPOS_TO_INDEX after scoring)
-
-    Returns:
-        List of repository dicts with: name, description, language,
-        stargazers_count, forks_count, html_url, fork, archived, etc.
     """
     response = await client.get(
         f"{GITHUB_API}/users/{username}/repos",
@@ -99,13 +130,14 @@ async def fetch_repositories(
             "per_page": min(max_repos, 100),
         },
     )
+    _check_rate_limit(response)
     response.raise_for_status()
     return response.json()
 
 
 async def fetch_readme(
     client: httpx.AsyncClient, owner: str, repo: str
-) -> str | None:
+) -> tuple[str | None, str | None]:
     """
     Fetch and decode the README file for a repository.
 
@@ -115,13 +147,17 @@ async def fetch_readme(
     We decode it to plain text.
 
     Returns:
-        str: The README content as plain text
-        None: If no README exists (404)
+        (readme_text, readme_sha), or (None, None) if there is no README
+        or it couldn't be fetched. One broken repo shouldn't fail the
+        whole profile, so only the rate limit is raised.
     """
     try:
         response = await client.get(
             f"{GITHUB_API}/repos/{owner}/{repo}/readme"
         )
+        _check_rate_limit(response)
+        if response.status_code == 404:
+            return None, None
         response.raise_for_status()
 
         data = response.json()
@@ -130,14 +166,15 @@ async def fetch_readme(
             "utf-8", errors="replace"
         )
 
-        # Also extract the SHA of the README file for caching
-        readme_sha = data.get("sha")
-        return readme_text, readme_sha
+        # The README file's SHA changes only when the README changes,
+        # so it works as a cache key for the embeddings.
+        return readme_text, data.get("sha")
 
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 404:
-            return None, None
-        raise e
+    except GitHubError:
+        raise
+    except (httpx.HTTPError, ValueError) as e:
+        logger.warning(f"Could not fetch README for {owner}/{repo}: {e}")
+        return None, None
 
 
 # ── Filtering & Ranking ─────────────────────────────────────────────
@@ -157,15 +194,6 @@ def filter_and_rank_repos(
     2. Remove archived repos (if configured)
     3. Sort by popularity score (stars + forks)
     4. Take top N repos
-
-    Args:
-        raw_repos: Raw repository list from GitHub API
-        max_repos: Maximum number of repos to keep
-        skip_forks: Whether to exclude forked repos
-        skip_archived: Whether to exclude archived repos
-
-    Returns:
-        Filtered and ranked list of repository dicts
     """
     filtered = []
     for repo in raw_repos:
@@ -203,7 +231,7 @@ async def analyze_profile(username: str) -> dict:
     2. Fetch all public repositories
     3. Filter & rank repos by quality
     4. Fetch README for each selected repo concurrently
-    5. Drop repos with empty/short READMEs
+    5. Drop READMEs that are too short to be useful
     6. Package everything into a structured result
 
     Returns:
@@ -217,8 +245,6 @@ async def analyze_profile(username: str) -> dict:
                     "stars": 42,
                     "forks": 7,
                     "url": "https://github.com/...",
-                    "fork": False,
-                    "archived": False,
                     "readme": "# README content..." or None,
                     "readme_sha": "abc123..." or None,
                 },
@@ -268,8 +294,6 @@ async def analyze_profile(username: str) -> dict:
                     "stars": repo.get("stargazers_count", 0),
                     "forks": repo.get("forks_count", 0),
                     "url": repo.get("html_url", ""),
-                    "fork": repo.get("fork", False),
-                    "archived": repo.get("archived", False),
                     "readme": readme_content,
                     "readme_sha": readme_sha,
                 }
