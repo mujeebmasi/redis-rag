@@ -1,8 +1,10 @@
 # RedisRAG — AI-Powered GitHub Profile Analyzer
 
+[![CI](https://github.com/mujeebmasi/redis-rag/actions/workflows/ci.yml/badge.svg)](https://github.com/mujeebmasi/redis-rag/actions/workflows/ci.yml)
+
 > Analyze any GitHub developer's profile and have an AI conversation about their projects, powered by Retrieval-Augmented Generation (RAG).
 
-**Live demo:** https://redis-rag.vercel.app (the free backend sleeps when idle, so the first request can take up to a minute)
+**Live demo:** https://redis-rag.vercel.app (runs on free tiers: a scheduled ping keeps the backend awake, but if it ever falls asleep the first request can take up to a minute)
 
 RedisRAG fetches public repositories, reads their README files, converts them into vector embeddings using **Google Gemini**, stores those vectors in **Redis**, and lets you ask questions about the developer's work. When you ask a question, the system searches Redis for the most relevant README snippets and sends them, together with a short overview of the whole profile, to an LLM on **Groq** to generate a grounded answer with source citations.
 
@@ -190,6 +192,7 @@ redis-rag/
 │       │   └── ChatConsole.tsx         # AI chat
 │       ├── services/api.ts             # Backend API client
 │       └── App.tsx
+├── .github/workflows/                # CI (tests, lint, build) and the keep-alive ping
 ├── docker-compose.yml                # Redis Stack for local development
 ├── .python-version                   # Python 3.14 (read by Render, CI and uv)
 └── .env                              # Environment variables (not committed)
@@ -399,7 +402,7 @@ Honest list of what this project does **not** do (yet):
 - **Background jobs run inside the web process** (FastAPI `BackgroundTasks`). A restart kills the job; the lock + "interrupted" status make that visible, but a real job queue (Celery / RQ / ARQ with a separate worker) would retry it automatically.
 - **No conversation memory** — each question is answered on its own.
 - **No answer evaluation** — there is no test set measuring whether the right repo is retrieved or the answer is faithful.
-- **Free-tier hosting** — the backend sleeps after 15 minutes idle (first request takes up to a minute), and Redis Cloud's free plan has 30 MB.
+- **Free-tier hosting** — Render's free plan stops the backend after 15 minutes idle (the next request takes up to a minute). The `keep-alive` workflow pings `/health` every 10 minutes to prevent that; running all month uses about 744 of the 750 free instance hours a Render workspace gets. Redis Cloud's free plan has 30 MB.
 
 ---
 
