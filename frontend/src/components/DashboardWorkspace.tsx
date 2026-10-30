@@ -15,7 +15,11 @@ const MAX_POLL_FAILURES = 5;
 function describeProgress(phase: string | null, progress: IndexingProgress | null): string {
   if (phase === 'embedding' && progress?.repos_total) {
     const current = progress.current_repo ? ` (${progress.current_repo})` : '';
-    return `Embedding READMEs: ${progress.repos_done ?? 0}/${progress.repos_total} repositories${current}...`;
+    const summary = `Embedding READMEs: ${progress.repos_done ?? 0}/${progress.repos_total} repositories${current}`;
+    if (progress.wait_seconds) {
+      return `${summary}. Gemini's free rate limit was reached, so this pauses for about ${progress.wait_seconds}s...`;
+    }
+    return `${summary}...`;
   }
   return progress?.detail || 'Fetching repositories and storing vector chunks in Redis...';
 }

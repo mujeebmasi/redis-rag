@@ -35,5 +35,7 @@ def fake_redis(monkeypatch):
 
 @pytest.fixture
 def no_sleep(monkeypatch):
-    """Make retry backoff instant."""
-    monkeypatch.setattr(embedding_service.time, "sleep", lambda seconds: None)
+    """Make retry backoff instant. Returns the pauses that would have happened."""
+    pauses = []
+    monkeypatch.setattr(embedding_service.time, "sleep", pauses.append)
+    return pauses

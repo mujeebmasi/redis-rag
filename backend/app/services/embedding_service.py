@@ -32,6 +32,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Callable
 
 import httpx
 import numpy as np
@@ -43,6 +44,7 @@ from redis.exceptions import ResponseError
 from app.core.config import settings
 from app.core.errors import UserFacingError
 from app.core.indexing_config import (
+    CHAT_MAX_WAIT,
     CHUNK_OVERLAP,
     CHUNK_SIZE,
     DATA_TTL_SECONDS,
@@ -51,6 +53,8 @@ from app.core.indexing_config import (
     EMBEDDING_DIM,
     EMBEDDING_MAX_RETRIES,
     EMBEDDING_MODEL,
+    EMBEDDING_RATE_LIMIT_WAIT,
+    INDEXING_MAX_WAIT,
     REDIS_PIPELINE_BATCH,
     STATUS_TTL_SECONDS,
     TOP_K,
@@ -68,6 +72,10 @@ CACHE_PREFIX = "cache:embed:"  # Key prefix for SHA cache
 
 class EmbeddingError(UserFacingError):
     """The embedding API failed. The message never contains the API key."""
+
+
+# Called with the number of seconds a request will pause for Gemini's rate limit.
+RateLimitCallback = Callable[[float], None]
 
 
 def log_to_redis(username: str, message: str) -> None:
@@ -147,6 +155,23 @@ def _split_text(text: str, chunk_size: int = None, chunk_overlap: int = None) ->
 # ── Embedding Model ─────────────────────────────────────────────────
 
 
+def _rate_limit_wait(response: httpx.Response) -> float:
+    """
+    How long Gemini asks us to wait after a 429, in seconds.
+
+    The free tier counts requests per minute, so a few seconds of backoff
+    is not enough. The error body says how long to wait:
+        {"error": {"details": [{"@type": "...RetryInfo", "retryDelay": "34s"}]}}
+    If the body has no such hint, wait one full minute.
+    """
+    try:
+        details = response.json()["error"]["details"]
+        delays = [detail["retryDelay"] for detail in details if "retryDelay" in detail]
+        return float(delays[0].removesuffix("s")) + 1  # +1s of margin
+    except (ValueError, KeyError, TypeError, IndexError, AttributeError):
+        return EMBEDDING_RATE_LIMIT_WAIT
+
+
 class GeminiEmbeddings:
     """
     Small client for the Gemini embedding REST API.
@@ -162,8 +187,9 @@ class GeminiEmbeddings:
       (RETRIEVAL_DOCUMENT / RETRIEVAL_QUERY), which Gemini tunes for search.
     - outputDimensionality=768 gives vectors 4x smaller than the default 3072,
       so far more profiles fit in a small Redis.
-    - 429 (rate limit), 5xx and network errors are retried with
-      exponential backoff: 2s, 4s.
+    - 5xx and network errors are retried with exponential backoff: 2s, 4s.
+    - A 429 (rate limit) waits as long as Gemini asks. Indexing accepts
+      waits up to INDEXING_MAX_WAIT; a chat question fails fast instead.
     """
 
     BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
@@ -181,8 +207,19 @@ class GeminiEmbeddings:
         self.dim = dim
         self._client = client or httpx.Client(timeout=EMBEDDING_API_TIMEOUT)
 
-    def _post(self, method: str, payload: dict) -> dict:
-        """POST to the Gemini API, retrying transient failures."""
+    def _post(
+        self,
+        method: str,
+        payload: dict,
+        max_rate_limit_wait: float,
+        on_rate_limit: RateLimitCallback | None = None,
+    ) -> dict:
+        """
+        POST to the Gemini API, retrying transient failures.
+
+        max_rate_limit_wait: the longest pause accepted after a 429.
+        on_rate_limit: called before each rate-limit pause, so the caller can report it.
+        """
         if not self.api_key:
             raise EmbeddingError("GOOGLE_API_KEY is not set on the server.")
 
@@ -191,6 +228,7 @@ class GeminiEmbeddings:
         problem = "unknown error"
 
         for attempt in range(1, EMBEDDING_MAX_RETRIES + 1):
+            wait = 2**attempt  # 2s, 4s for network errors and 5xx
             try:
                 response = self._client.post(url, json=payload, headers=headers)
             except httpx.TransportError as e:
@@ -203,18 +241,23 @@ class GeminiEmbeddings:
                 logger.warning(f"Gemini {method} returned {problem}: {response.text[:300]}")
                 if response.status_code not in self.RETRY_STATUSES:
                     break  # Retrying won't fix a bad request or a bad key
+                if response.status_code == 429:
+                    wait = _rate_limit_wait(response)
+                    if wait > max_rate_limit_wait:
+                        break  # Too long to wait here (e.g. the daily quota is used up)
 
             if attempt < EMBEDDING_MAX_RETRIES:
-                wait = 2**attempt  # 2s, 4s
                 logger.warning(
                     f"Gemini {method} attempt {attempt}/{EMBEDDING_MAX_RETRIES} "
-                    f"failed ({problem}). Retrying in {wait}s..."
+                    f"failed ({problem}). Retrying in {wait:.0f}s..."
                 )
+                if on_rate_limit and problem == "HTTP 429":
+                    on_rate_limit(wait)
                 time.sleep(wait)
 
         if problem == "HTTP 429":
             raise EmbeddingError(
-                "Gemini embedding API rate limit reached. Please wait a minute and try again."
+                "Gemini's free rate limit was reached. Please try again in a few minutes."
             )
         raise EmbeddingError(f"Gemini embedding API failed ({problem}).")
 
@@ -226,7 +269,9 @@ class GeminiEmbeddings:
             )
         return vector
 
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+    def embed_documents(
+        self, texts: list[str], on_rate_limit: RateLimitCallback | None = None
+    ) -> list[list[float]]:
         """Embed README chunks, in batches of EMBEDDING_BATCH_SIZE."""
         vectors = []
         for start in range(0, len(texts), EMBEDDING_BATCH_SIZE):
@@ -244,6 +289,8 @@ class GeminiEmbeddings:
                         for text in batch
                     ]
                 },
+                max_rate_limit_wait=INDEXING_MAX_WAIT,
+                on_rate_limit=on_rate_limit,
             )
             embeddings = data.get("embeddings", [])
             if len(embeddings) != len(batch):
@@ -263,6 +310,7 @@ class GeminiEmbeddings:
                 "taskType": "RETRIEVAL_QUERY",
                 "outputDimensionality": self.dim,
             },
+            max_rate_limit_wait=CHAT_MAX_WAIT,
         )
         return self._check_dim(data["embedding"]["values"])
 
@@ -556,8 +604,29 @@ def embed_and_store(
         # The repo name goes in front of each chunk so the vector also
         # "knows" which project the text belongs to.
         log_to_redis(username, f"{step}: embedding {len(chunks)} chunks...")
+
+        def report_rate_limit(seconds: float) -> None:
+            """
+            Tell the user why the job paused. Reporting progress also
+            refreshes the job's lock, so a long pause can't look like a dead job.
+            """
+            log_to_redis(username, f"{step}: Gemini rate limit, waiting {seconds:.0f}s.")
+            if progress_callback:
+                progress_callback(
+                    "embedding",
+                    {
+                        "current_repo": repo_name,
+                        "repos_done": repo_idx,
+                        "repos_total": total_repos,
+                        "chunks_done": stats["total_chunks"],
+                        "wait_seconds": round(seconds),
+                        "detail": "waiting for Gemini's rate limit",
+                    },
+                )
+
         vectors = embeddings_model.embed_documents(
-            [f"Repository: {repo_name}\n\n{chunk}" for chunk in chunks]
+            [f"Repository: {repo_name}\n\n{chunk}" for chunk in chunks],
+            on_rate_limit=report_rate_limit,
         )
 
         # ── Replace old vectors with the new ones ────────────────

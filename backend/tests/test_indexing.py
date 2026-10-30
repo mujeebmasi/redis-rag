@@ -17,8 +17,11 @@ class FakeEmbedder:
 
     def __init__(self):
         self.embedded = 0
+        self.pause_seconds = None  # Set to act as if Gemini's rate limit was hit
 
-    def embed_documents(self, texts):
+    def embed_documents(self, texts, on_rate_limit=None):
+        if self.pause_seconds and on_rate_limit:
+            on_rate_limit(self.pause_seconds)
         self.embedded += len(texts)
         return [[0.1] * EMBEDDING_DIM for _ in texts]
 
@@ -95,6 +98,21 @@ def test_other_users_are_left_alone(embedder, fake_redis):
     svc.embed_and_store("bob", [_repo("tool", "sha9")])
 
     assert _doc_keys(fake_redis, "alice") == ["doc:readme:alice:app:0"]
+
+
+def test_rate_limit_pause_is_reported_as_progress(embedder):
+    embedder.pause_seconds = 35.0
+    updates = []
+
+    svc.embed_and_store(
+        "alice",
+        [_repo("app", "sha1")],
+        progress_callback=lambda phase, detail: updates.append(detail),
+    )
+
+    paused = [update for update in updates if "wait_seconds" in update]
+    assert paused[0]["wait_seconds"] == 35
+    assert paused[0]["current_repo"] == "app"
 
 
 # ── Background job ───────────────────────────────────────────────────

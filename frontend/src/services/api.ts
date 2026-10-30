@@ -37,6 +37,7 @@ export interface IndexingProgress {
   repos_done?: number;
   repos_total?: number;
   chunks_done?: number;
+  wait_seconds?: number; // Set while indexing pauses for Gemini's rate limit
 }
 
 export interface GitHubStatusResponse {

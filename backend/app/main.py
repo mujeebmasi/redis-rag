@@ -36,7 +36,7 @@ app = FastAPI(
         "Retrieval-Augmented Generation (RAG). "
         "Analyze any GitHub profile and chat with AI about their projects."
     ),
-    version="1.1.0",
+    version="1.1.1",
 )
 
 # ── CORS Middleware ──────────────────────────────────────────────────

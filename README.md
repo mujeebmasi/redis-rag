@@ -119,7 +119,8 @@ The trade-off: Redis keeps everything in RAM, which is expensive at scale. With 
 - **Gemini REST API** — plain HTTP calls (no SDK, which hangs on non-Google hosts). The API key travels in a header, never in the URL.
 - **768-dimensional vectors** — 4x smaller than Gemini's default 3072, so far more profiles fit in a small Redis.
 - **Search-tuned embeddings** — documents use task type `RETRIEVAL_DOCUMENT`, questions use `RETRIEVAL_QUERY`.
-- **Batching + retries** — up to 50 chunks per API call; 429 / 5xx / network errors retried with backoff.
+- **Batching + retries** — up to 50 chunks per API call; 5xx / network errors are retried with backoff.
+- **Rate-limit aware** — Gemini's free tier counts requests per minute. After a 429, indexing waits as long as Gemini asks (its `retryDelay`, usually under a minute) and the UI shows the pause; a chat question fails fast instead of hanging.
 - **SHA-based caching** — each README's file SHA is cached; re-analysis skips unchanged READMEs entirely.
 - **Self-cleaning** — every key expires after 24 hours, and repos that drop out of the top 15 are deleted.
 
@@ -370,6 +371,7 @@ All indexing behavior is controlled from [`indexing_config.py`](backend/app/core
 | `EMBEDDING_DIM` | 768 | Vector size (768, 1536 or 3072) |
 | `EMBEDDING_BATCH_SIZE` | 50 | Chunks per Gemini API call |
 | `EMBEDDING_MAX_RETRIES` | 3 | Attempts for 429 / 5xx / network errors |
+| `INDEXING_MAX_WAIT` | 90 | Longest pause indexing accepts after a 429 (seconds); longer ones, like a used-up daily quota, fail with a clear message |
 | `TOP_K` | 5 | README chunks sent to the LLM per question |
 | `DATA_TTL_SECONDS` | 86400 | How long a profile's data lives (24h) |
 
