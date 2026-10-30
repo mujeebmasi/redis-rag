@@ -464,6 +464,27 @@
   font-weight: 600;
 }
 
+/* Tables (rendered by remark-gfm). A wide table scrolls sideways instead of stretching the bubble. */
+.ai .message-content table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin-bottom: 0.75rem;
+  font-size: 0.9rem;
+}
+.ai .message-content th,
+.ai .message-content td {
+  border: 1px solid var(--border-color);
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+}
+.ai .message-content th {
+  background: rgba(0, 0, 0, 0.04);
+  font-weight: 600;
+}
+
 .chat-citations {
   display: flex;
   flex-wrap: wrap;

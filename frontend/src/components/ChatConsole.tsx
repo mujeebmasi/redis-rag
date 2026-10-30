@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { api } from '../services/api';
 import { Send, Loader, User, Bot, ExternalLink } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 interface Message {
   id: string;
@@ -122,7 +123,8 @@ export const ChatConsole: React.FC<ChatConsoleProps> = ({ username, indexingStat
                   </p>
                 ))
               ) : (
-                <ReactMarkdown>{msg.text}</ReactMarkdown>
+                // remark-gfm adds GitHub-style Markdown: tables, strikethrough, task lists
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
               )}
               
               {/* Citations */}
