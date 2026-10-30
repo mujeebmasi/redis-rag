@@ -1,0 +1,8 @@
+# The app's dependencies plus the test tools.
+# requirements-dev.txt is generated from this file (see requirements.in).
+# The -c line keeps every shared package at the same version as requirements.txt.
+-r requirements.in
+-c requirements.txt
+
+pytest
+fakeredis

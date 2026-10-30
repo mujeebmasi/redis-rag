@@ -1,0 +1,33 @@
+# ============================================================
+# RedisRAG - Python Dependencies (the ones the app uses directly)
+# ============================================================
+# This file lists packages without versions. requirements.txt is
+# generated from it with every package pinned to an exact version,
+# so every install (local, CI, Render) gets the same code.
+#
+# After editing this file, regenerate both lock files (from backend/):
+#   uv pip compile requirements.in -o requirements.txt --python-version 3.14 --universal
+#   uv pip compile requirements-dev.in -o requirements-dev.txt --python-version 3.14 --universal
+# --universal makes the files right for Linux (Render, CI) as well as Windows.
+# ============================================================
+
+# ── Web Framework ───────────────────────────────────────────
+fastapi
+uvicorn
+
+# ── Config & Data Validation ────────────────────────────────
+pydantic
+pydantic-settings
+
+# ── Redis (vector store, cache, job status) ─────────────────
+redis
+
+# ── HTTP Client (GitHub + Gemini REST APIs) ─────────────────
+httpx
+
+# ── LLM (Groq, called through LangChain) ────────────────────
+langchain-core
+langchain-groq
+
+# ── Numerical (vector → bytes for Redis) ────────────────────
+numpy
